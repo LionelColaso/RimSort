@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -29,6 +30,7 @@ from app.utils.app_info import AppInfo
 from app.utils.event_bus import EventBus
 from app.utils.generic import handle_remove_read_only
 from app.utils.gui_info import GUIInfo
+from app.utils.search import SearchTool
 from app.utils.steam.steamcmd.wrapper import SteamcmdInterface
 from app.utils.watchdog import WatchdogHandler
 from app.views.dialogue import (
@@ -88,8 +90,20 @@ class MainWindow(QMainWindow):
         )
         self.bottom_panel = Status()
 
-        # Arrange all panels vertically on the main window layout
-        app_layout.addWidget(self.main_content_panel.main_layout_frame)
+        # Add the tab widget to the main layout
+        self.tab_widget = QTabWidget()
+        app_layout.addWidget(self.tab_widget)  # Add it to the main layout
+
+        # Add the main content panel to a tab in the QTabWidget
+        self.tab_widget.addTab(
+            self.main_content_panel.main_layout_frame, "Main Content"
+        )
+
+        # Create search widget
+        self.search_widget = SearchTool(settings_controller)
+
+        # Add search widget to a tab in the QTabWidget
+        self.tab_widget.addTab(self.search_widget, "Search")
 
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(12, 12, 12, 12)
@@ -903,11 +917,11 @@ class MainWindow(QMainWindow):
         self.settings_controller.settings.save()
         # Initialize content
         self.initialize_content(is_initial=False)
-        
+
     def __set_window_title(self, instance: str) -> None:
         """
         Sets the window title with the name of the instance being used.
-        
+
         :param instance: Name of the instance currently being used.
         """
         self.setWindowTitle(f"RimSort {AppInfo().app_version} | {instance} Instance")
