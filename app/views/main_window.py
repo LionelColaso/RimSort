@@ -35,6 +35,7 @@ from app.models.dialogue import (
 from app.utils.app_info import AppInfo
 from app.utils.event_bus import EventBus
 from app.utils.gui_info import GUIInfo
+from app.utils.search import SearchTool
 from app.utils.steam.steamcmd.wrapper import SteamcmdInterface
 from app.utils.watchdog import WatchdogHandler
 from app.views.acf_reader_panel import Acf_Reader
@@ -113,6 +114,12 @@ class MainWindow(QMainWindow):
 
         # Add Acf_Reader widget to a tab in the QTabWidget
         self.tab_widget.addTab(self.acf_reader_widget, "Update Log")
+
+        # Create search widget
+        self.search_widget = SearchTool()
+
+        # Add search widget to a tab in the QTabWidget
+        self.tab_widget.addTab(self.search_widget, "Search")
 
         # Arrange all panels vertically on the main window layout
         button_layout = QHBoxLayout()
