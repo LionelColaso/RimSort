@@ -30,6 +30,7 @@ from app.utils.app_info import AppInfo
 from app.utils.event_bus import EventBus
 from app.utils.generic import handle_remove_read_only
 from app.utils.gui_info import GUIInfo
+from app.utils.search import SearchTool
 from app.utils.steam.steamcmd.wrapper import SteamcmdInterface
 from app.utils.watchdog import WatchdogHandler
 from app.views.dialogue import (
@@ -146,6 +147,17 @@ class MainWindow(QMainWindow):
         self.log_reader_layout.addWidget(self.log_reader)
 
         self.tab_widget.addTab(self.log_reader_tab, "Log Reader")
+
+        # Create and add the search tab
+        self.search_tab = QWidget()
+        self.search_layout = QVBoxLayout()
+        self.search_tab.setLayout(self.search_layout)
+
+        # Instantiate the SearchTool and add it to the tab
+        self.search_tool = SearchTool(settings_controller)
+        self.search_layout.addWidget(self.search_tool)
+
+        self.tab_widget.addTab(self.search_tab, "Search")
 
         # Save button flashing animation
         self.save_button_flashing_animation = QTimer()
