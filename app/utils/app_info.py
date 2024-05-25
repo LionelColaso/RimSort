@@ -81,6 +81,7 @@ class AppInfo:
         # Derive some secondary directory paths
 
         self._databases_folder: Path = self._app_storage_folder / "dbs"
+        self._theme_storage_folder: Path = self._app_storage_folder / "themes"
         self._theme_data_folder: Path = self._application_folder / "themes"
         self._settings_file: Path = self._app_storage_folder / "settings.json"
 
@@ -90,6 +91,7 @@ class AppInfo:
         self._user_log_folder.mkdir(parents=True, exist_ok=True)
 
         self._databases_folder.mkdir(parents=True, exist_ok=True)
+        self._theme_storage_folder.mkdir(parents=True, exist_ok=True)
 
         self._is_initialized: bool = True
 
@@ -175,6 +177,13 @@ class AppInfo:
         Get the path to the folder where application-specific data is stored.
         """
         return self._theme_data_folder
+
+    @property
+    def theme_storage_folder(self) -> Path:
+        """
+        Get the path to the folder where application-specific data is stored.
+        """
+        return self._theme_storage_folder
 
     @property
     def databases_folder(self) -> Path:
