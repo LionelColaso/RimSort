@@ -4,7 +4,14 @@ from pathlib import Path
 from loguru import logger
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QTextBrowser,
+    QVBoxLayout,
+)
 
 from app.models.image_label import ImageLabel
 from app.models.scroll_label import ScrollLabel
@@ -128,7 +135,18 @@ class ModInfo:
         )
         self.mod_info_path_value.setWordWrap(True)
         self.description = ScrollLabel()
-        self.description.setText("\n\n\n\n\t\t\tWelcome to RimSort!")
+        # Create a QTextBrowser for displaying the description
+        self.description = QTextBrowser()
+        self.description.setOpenExternalLinks(True)  # Make links clickable
+        self.description.setHtml(
+            "<div style='text-align: center;'>"
+            "<div>Welcome To RimSort!</div>"
+            "<div>Made Out Of Frustration & Love</div>"
+            "<div>By Gamers For Gamers</div>"
+            "<div>Show Your Love & Support By Giving Us A Star On "
+            "<a href='https://github.com/RimSort/RimSort'>GitHub</a></div>"
+            "</div>"
+        )
         # Add widgets to child layouts
         self.image_layout.addWidget(self.preview_picture)
         self.mod_info_name.addWidget(self.mod_info_name_label, 20)
@@ -387,4 +405,4 @@ class ModInfo:
                             Qt.AspectRatioMode.KeepAspectRatio,
                         )
                     )
-        logger.debug("Finished displaying mod info")
+                    logger.debug("Finished displaying mod info")
