@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -31,6 +32,7 @@ from app.utils.generic import handle_remove_read_only
 from app.utils.gui_info import GUIInfo
 from app.utils.steam.steamcmd.wrapper import SteamcmdInterface
 from app.utils.watchdog import WatchdogHandler
+from app.views.acf_reader_panel import AcfReader
 from app.views.dialogue import (
     BinaryChoiceDialog,
     show_dialogue_conditional,
@@ -79,6 +81,10 @@ class MainWindow(QMainWindow):
         app_layout.setContentsMargins(0, 0, 0, 0)  # Space from main layout to border
         app_layout.setSpacing(0)  # Space between widgets
 
+        # Create a QTabWidget
+        self.tab_widget = QTabWidget()
+        app_layout.addWidget(self.tab_widget)  # Add it to the main layout
+
         # Create various panels on the application GUI
         self.main_content_panel = MainContent(
             settings_controller=self.settings_controller
@@ -88,9 +94,18 @@ class MainWindow(QMainWindow):
         )
         self.bottom_panel = Status()
 
-        # Arrange all panels vertically on the main window layout
-        app_layout.addWidget(self.main_content_panel.main_layout_frame)
+        # Add the main content panel to a tab in the QTabWidget
+        self.tab_widget.addTab(
+            self.main_content_panel.main_layout_frame, "Main Content"
+        )
 
+        # Create Acf_Reader widget
+        self.acf_reader_widget = AcfReader()
+
+        # Add Acf_Reader widget to a tab in the QTabWidget
+        self.tab_widget.addTab(self.acf_reader_widget, "Update Log")
+
+        # Arrange all panels vertically on the main window layout
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(12, 12, 12, 12)
         button_layout.setSpacing(12)
@@ -903,11 +918,11 @@ class MainWindow(QMainWindow):
         self.settings_controller.settings.save()
         # Initialize content
         self.initialize_content(is_initial=False)
-        
+
     def __set_window_title(self, instance: str) -> None:
         """
         Sets the window title with the name of the instance being used.
-        
+
         :param instance: Name of the instance currently being used.
         """
         self.setWindowTitle(f"RimSort {AppInfo().app_version}: {instance} Instance")
