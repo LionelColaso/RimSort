@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -39,6 +40,7 @@ from app.views.dialogue import (
     show_fatal_error,
     show_warning,
 )
+from app.views.acf_reader_panel import Acf_Reader
 from app.views.main_content_panel import MainContent
 from app.views.menu_bar import MenuBar
 from app.views.status_panel import Status
@@ -78,6 +80,10 @@ class MainWindow(QMainWindow):
         app_layout.setContentsMargins(0, 0, 0, 0)  # Space from main layout to border
         app_layout.setSpacing(0)  # Space between widgets
 
+        # Create a QTabWidget
+        self.tab_widget = QTabWidget()
+        app_layout.addWidget(self.tab_widget)  # Add it to the main layout
+
         # Create various panels on the application GUI
         self.main_content_panel = MainContent(
             settings_controller=self.settings_controller
@@ -87,9 +93,18 @@ class MainWindow(QMainWindow):
         )
         self.bottom_panel = Status()
 
-        # Arrange all panels vertically on the main window layout
-        app_layout.addWidget(self.main_content_panel.main_layout_frame)
+        # Add the main content panel to a tab in the QTabWidget
+        self.tab_widget.addTab(
+            self.main_content_panel.main_layout_frame, "Main Content"
+        )
 
+        # Create Acf_Reader widget
+        self.acf_reader_widget = Acf_Reader()
+
+        # Add Acf_Reader widget to a tab in the QTabWidget
+        self.tab_widget.addTab(self.acf_reader_widget, "Update Log")
+
+        # Arrange all panels vertically on the main window layout
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(12, 12, 12, 12)
         button_layout.setSpacing(12)
