@@ -144,14 +144,32 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build
+      - name: Build        
         uses: Nuitka/Nuitka-Action@main
-        if: true
+        if: true && runner.os != 'macos'
         with:
           nuitka-version: main
           script-name: app/__main__.py
-          onefile: false
-          mode: standalone
+          mode: standalone 
+          static-libpython: auto
+          product-version: >-
+            ${{ steps.sem_version.outputs.major }}.
+            ${{ steps.sem_version.outputs.minor }}.
+            ${{ steps.sem_version.outputs.patch }}.
+            ${{ steps.sem_version.outputs.increment }}
+          file-description: "RimSort"
+          include-data-files: |
+            version.xml=version.xml
+        env:
+          PYTHONPATH: ${{ steps.pythonpath.outputs.PYTHONPATH }}
+
+      - name: Build
+        uses: Nuitka/Nuitka-Action@main
+        if: true && runner.os == 'macos'
+        with:
+          nuitka-version: main
+          script-name: app/__main__.py
+          mode: app
           static-libpython: auto
           product-version: >-
             ${{ steps.sem_version.outputs.major }}.
