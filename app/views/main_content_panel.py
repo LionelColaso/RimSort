@@ -1,4 +1,3 @@
-import datetime
 import json
 import os
 import platform
@@ -19,28 +18,14 @@ from urllib.parse import urlparse
 from zipfile import ZipFile
 
 from loguru import logger
-
-from app.utils.generic import (
-    check_valid_http_git_url,
-    extract_git_dir_name,
-    extract_git_user_or_org,
-    platform_specific_open,
+from pygit2 import (
+    GIT_MERGE_ANALYSIS_FASTFORWARD,
+    GIT_MERGE_ANALYSIS_UP_TO_DATE,
+    GitError,
+    Repository,
+    Signature,
+    clone_repository,
 )
-from app.utils.system_info import SystemInfo
-
-# GitPython depends on git executable being available in PATH
-try:
-    from git import Repo
-    from git.exc import GitCommandError
-
-    GIT_EXISTS = True
-except ImportError:
-    logger.warning(
-        "git not detected in your PATH! Do you have git installed...? git integration will be disabled! You may need to restart the app if you installed it."
-    )
-    GIT_EXISTS = False
-
-from github import Github
 from PySide6.QtCore import (
     QEventLoop,
     QObject,
@@ -60,11 +45,13 @@ from app.models.animations import LoadingAnimation
 from app.utils.app_info import AppInfo
 from app.utils.event_bus import EventBus
 from app.utils.generic import (
+    check_valid_http_git_url,
     chunks,
     copy_to_clipboard_safely,
     delete_files_except_extension,
+    extract_git_dir_name,
     launch_game_process,
-    open_url_browser,
+    platform_specific_open,
     upload_data_to_0x0_st,
 )
 from app.utils.metadata import MetadataManager, SettingsController
@@ -80,6 +67,7 @@ from app.utils.steam.webapi.wrapper import (
     CollectionImport,
     ISteamRemoteStorage_GetPublishedFileDetails,
 )
+from app.utils.system_info import SystemInfo
 from app.utils.todds.wrapper import ToddsInterface
 from app.utils.xml import json_to_xml_write
 from app.views.mod_info_panel import ModInfo
@@ -726,43 +714,31 @@ class MainContent(QObject):
         if action == "configure_steam_database_repo":
             self._do_configure_steam_database_repo()
         if action == "download_steam_database":
-            if GIT_EXISTS:
-                self._do_clone_repo_to_path(
-                    base_path=str(AppInfo().databases_folder),
-                    repo_url=self.settings_controller.settings.external_steam_metadata_repo,
-                )
-            else:
-                self._do_notify_no_git()
+            self._do_clone_repo_to_path(
+                base_path=str(AppInfo().databases_folder),
+                repo_url=self.settings_controller.settings.external_steam_metadata_repo,
+            )
         if action == "upload_steam_database":
-            if GIT_EXISTS:
-                self._do_upload_db_to_repo(
-                    repo_url=self.settings_controller.settings.external_steam_metadata_repo,
-                    file_name="steamDB.json",
-                )
-            else:
-                self._do_notify_no_git()
+            self._do_upload_db_to_repo(
+                repo_url=self.settings_controller.settings.external_steam_metadata_repo,
+                file_name="steamDB.json",
+            )
         if action == "configure_community_rules_db_path":
             self._do_configure_community_rules_db_file_path()
         if action == "configure_community_rules_db_repo":
             self._do_configure_community_rules_db_repo()
         if action == "download_community_rules_database":
-            if GIT_EXISTS:
-                self._do_clone_repo_to_path(
-                    base_path=str(AppInfo().databases_folder),
-                    repo_url=self.settings_controller.settings.external_community_rules_repo,
-                )
-            else:
-                self._do_notify_no_git()
+            self._do_clone_repo_to_path(
+                base_path=str(AppInfo().databases_folder),
+                repo_url=self.settings_controller.settings.external_community_rules_repo,
+            )
         if action == "open_community_rules_with_rule_editor":
             self._do_open_rule_editor(compact=False, initial_mode="community_rules")
         if action == "upload_community_rules_database":
-            if GIT_EXISTS:
-                self._do_upload_db_to_repo(
-                    repo_url=self.settings_controller.settings.external_community_rules_repo,
-                    file_name="communityRules.json",
-                )
-            else:
-                self._do_notify_no_git()
+            self._do_upload_db_to_repo(
+                repo_url=self.settings_controller.settings.external_community_rules_repo,
+                file_name="communityRules.json",
+            )
         if action == "build_steam_database_thread":
             self._do_build_database_thread()
         if "download_entire_workshop" in action:
@@ -2227,134 +2203,90 @@ class MainContent(QObject):
             logger.debug("USER ACTION: cancelled input!")
             return
 
-    def _do_cleanup_gitpython(self, repo: "Repo") -> None:
-        # Cleanup GitPython
+    def _do_cleanup_pygit2(self, repo: "Repository") -> None:
+        """
+        Clean up resources used by pygit2.
+
+        :param repo: The pygit2 Repository object to clean up.
+        """
+        # Force garbage collection and free the repository
         collect()
-        repo.git.clear_cache()
+        repo.free()
         del repo
 
     def _check_git_repos_for_update(self, repo_paths: list[str]) -> None:
-        if GIT_EXISTS:
-            # Track summary of repo updates
-            updates_summary = {}
-            for repo_path in repo_paths:
-                logger.info(f"Checking git repository for updates at: {repo_path}")
-                if os.path.exists(repo_path):
-                    repo = Repo(repo_path)
-                    try:
-                        # Check if directory has been added to safe directories
-                        """
-                        This is only necessary when a git repo was cloned by a different user.
+        """
+        Check the specified git repositories for updates and pull the latest changes if available.
 
-                        Eg. I download repo on 'D' hard drive on old laptop. Then I put the 'D' drive in new laptop.
-                        When trying to perform an operation on that repo from the new laptop, you get the dubious ownership error.
-
-                        TODO: Include in PyGit2 migration.
-                        NOTE: Try-Except needed because GitPython does not handle it well when no safe directories exist... PyGit2 might be better at it.
-                        """
-                        try:
-                            safe_directories = repo.git.config(
-                                "--global", "--get-all", "safe.directory"
-                            ).splitlines()
-                        except GitCommandError:
-                            logger.debug("No safe directories present")
-                            safe_directories = []  # Allows code below to execute
-
-                        # If not, add it to safe directories
-                        if repo_path not in safe_directories:
-                            repo.git.config("--global", "--add", "safe.directory", repo_path)
-
-                        # Fetch the latest changes from the remote
-                        origin = repo.remote(name="origin")
-                        origin.fetch()
-
-                        # Get the local and remote refs
-                        local_ref = repo.head.reference
-                        remote_ref = repo.refs[f"origin/{local_ref.name}"]
-
-                        # Check if the local branch is behind the remote branch
-                        if local_ref.commit != remote_ref.commit:
-                            local_name = local_ref.name
-                            remote_name = remote_ref.name
-                            logger.info(
-                                f"Local branch {local_name} is not up-to-date with remote branch {remote_name}. Updating forcefully."
-                            )
-                            # Create a summary of the changes that will be made for the repo to be updated
-                            updates_summary[repo_path] = {
-                                "HEAD~1": local_ref.commit.hexsha[:7],
-                            }
-                            # Force pull the latest changes
-                            repo.git.reset("--hard", remote_ref.name)
-                            repo.git.clean("-fdx")  # Remove untracked files
-                            origin.pull(local_ref.name, rebase=True)
-                            updates_summary[repo_path].update(
-                                {
-                                    "HEAD": remote_ref.commit.hexsha[:7],
-                                    "message": remote_ref.commit.message,
-                                }
-                            )
-                        else:
-                            logger.info("The local repository is already up-to-date.")
-                    except GitCommandError:
-                        stacktrace = traceback.format_exc()
-                        dialogue.show_warning(
-                            title="Failed to update repo!",
-                            text=f"The repository supplied at [{repo_path}] failed to update!\n"
-                            + "Are you connected to the Internet? "
-                            + "Is the repo valid?",
-                            information=(
-                                f"Supplied repository: {repo.remotes.origin.url}"
-                                if repo
-                                and repo.remotes
-                                and repo.remotes.origin
-                                and repo.remotes.origin.url
-                                else None
-                            ),
-                            details=stacktrace,
-                        )
-                    finally:
-                        self._do_cleanup_gitpython(repo)
-            # If any updates were found, notify the user
-            if updates_summary:
-                repos_updated = "\n".join(
-                    list(os.path.split(k)[1] for k in updates_summary.keys())
-                )
-                updates_summarized = "\n".join(
-                    [
-                        f"[{os.path.split(k)[1]}]: {v['HEAD~1'] + '...' + v['HEAD']}\n"
-                        + f"{v['message']}\n"
-                        for k, v in updates_summary.items()
-                    ]
-                )
-                dialogue.show_information(
-                    title="Git repo(s) updated",
-                    text="The following repo(s) had updates pulled from the remote:",
-                    information=repos_updated,
-                    details=updates_summarized,
-                )
-            else:
-                dialogue.show_information(
-                    title="Git repo(s) not updated",
-                    text="No updates were found.",
-                )
+        :param repo_paths: List of paths to the git repositories to check for updates.
+        """
+        # Track summary of repo updates
+        updates_summary = {}
+        for repo_path in repo_paths:
+            logger.info(f"Checking git repository for updates at: {repo_path}")
+            if os.path.exists(repo_path):
+                repo = Repository(repo_path)
+                try:
+                    # Iterate through references to find the main branch
+                    for ref in repo.references:
+                        if ref.name == "refs/heads/main":
+                            repo.checkout(ref)
+                            remote = repo.remotes["origin"]
+                            remote.fetch()
+                            remote_master_id = repo.lookup_reference(
+                                "refs/remotes/origin/main"
+                            ).target
+                            merge_result, _ = repo.merge_analysis(remote_master_id)
+                            if merge_result & GIT_MERGE_ANALYSIS_UP_TO_DATE:
+                                logger.info(f"Repository {repo_path} is up to date.")
+                            elif merge_result & GIT_MERGE_ANALYSIS_FASTFORWARD:
+                                remote_master_commit = repo.get(remote_master_id)
+                                if remote_master_commit:
+                                    repo.checkout_tree(remote_master_commit)
+                                    repo.head.set_target(remote_master_id)
+                                    updates_summary[repo_path] = {
+                                        "HEAD~1": repo[repo.head.target].hex,
+                                        "HEAD": repo[repo.head.target].hex,
+                                        "message": repo.get(repo.head.target).message,
+                                    }
+                except GitError as e:
+                    logger.error(f"Failed to update repo {repo_path}: {e}")
+                finally:
+                    self._do_cleanup_pygit2(repo)
+        # If any updates were found, notify the user
+        if updates_summary:
+            repos_updated = "\n".join(
+                list(os.path.split(k)[1] for k in updates_summary.keys())
+            )
+            updates_summarized = "\n".join(
+                [
+                    f"[{os.path.split(k)[1]}]: {v['HEAD~1'] + '...' + v['HEAD']}\n"
+                    + f"{repo.get(v['HEAD']).message}\n"
+                    for k, v in updates_summary.items()
+                ]
+            )
+            dialogue.show_information(
+                title="Git repo(s) updated",
+                text="The following repo(s) had updates pulled from the remote:",
+                information=repos_updated,
+                details=updates_summarized,
+            )
         else:
-            self._do_notify_no_git()
+            dialogue.show_information(
+                title="Git repo(s) not updated",
+                text="No updates were found.",
+            )
 
     def _do_clone_repo_to_path(self, base_path: str, repo_url: str) -> None:
         """
-        Checks validity of configured git repo, as well as if it exists
-        Handles possible existing repo, and prompts (re)download of repo
-        Otherwise it just clones the repo and notifies user
-        """
-        # Check if git is installed
-        if not GIT_EXISTS:
-            self._do_notify_no_git()
-            return
+        Clone a git repository to the specified path.
 
+        :param base_path: The base path where the repository should be cloned.
+        :param repo_url: The URL of the git repository to clone.
+        """
         repo_url = repo_url.strip()
         if check_valid_http_git_url(repo_url):
             repo_folder_name = extract_git_dir_name(repo_url)
-
             repo_path = str((Path(base_path) / repo_folder_name))
             if os.path.exists(repo_path):  # If local repo does exist
                 # Prompt to user to handle
@@ -2373,66 +2305,29 @@ class MainContent(QObject):
                     ],
                 )
                 if answer == "Cancel":
-                    logger.debug(
-                        f"User cancelled prompt. Skipping any {repo_folder_name} repository actions."
-                    )
                     return
                 elif answer == "Clone new":
-                    logger.info(f"Deleting local git repo at: {repo_path}")
-                    delete_files_except_extension(directory=repo_path, extension=".dds")
+                    delete_files_except_extension(repo_path, "")
                 elif answer == "Update existing":
-                    self._do_force_update_existing_repo(
-                        base_path=base_path, repo_url=repo_url
-                    )
+                    self._do_force_update_existing_repo(base_path, repo_url)
                     return
             # Clone the repo to storage path and notify user
             logger.info(f"Cloning {repo_url} to: {repo_path}")
             try:
-                Repo.clone_from(repo_url, repo_path)
+                clone_repository(repo_url, repo_path)
                 dialogue.show_information(
                     title="Repo retrieved",
                     text="The configured repository was cloned!",
                     information=f'<a href="{repo_url}">{repo_url}</a>  ->\n'
                     + f"{repo_path}",
                 )
-            except GitCommandError:
-                try:
-                    # Initialize a new Git repository
-                    repo = Repo.init(repo_path)
-                    # Add the origin remote
-                    origin_remote = repo.create_remote("origin", repo_url)
-                    # Fetch the remote branches
-                    origin_remote.fetch()
-                    # Determine the target branch name
-                    target_branch = None
-                    for ref in repo.remotes.origin.refs:
-                        if ref.remote_head in ("main", "master"):
-                            target_branch = ref.remote_head
-                            break
-
-                    if target_branch:
-                        # Checkout the target branch
-                        repo.git.checkout(
-                            f"origin/{target_branch}", b=target_branch, force=True
-                        )
-                    else:
-                        # Handle the case when the target branch is not found
-                        logger.warning("Target branch not found.")
-                    dialogue.show_information(
-                        title="Repo retrieved",
-                        text="The configured repository was reinitialized with existing files! (likely leftover .dds textures)",
-                        information=f"{repo_url} ->\n" + f"{repo_path}",
-                    )
-                except GitCommandError:
-                    stacktrace = traceback.format_exc()
-                    dialogue.show_warning(
-                        title="Failed to clone repo!",
-                        text="The configured repo failed to clone/initialize! "
-                        + "Are you connected to the Internet? "
-                        + "Is your configured repo valid?",
-                        information=f"Configured repository: {repo_url}",
-                        details=stacktrace,
-                    )
+            except GitError as e:
+                logger.error(f"Failed to clone repo {repo_url}: {e}")
+                dialogue.show_warning(
+                    title="Failed to clone repository",
+                    text="Failed to clone the repository!",
+                    information=f"Error: {e}",
+                )
         else:
             # Warn the user so they know to configure in settings
             dialogue.show_warning(
@@ -2446,9 +2341,10 @@ class MainContent(QObject):
 
     def _do_force_update_existing_repo(self, base_path: str, repo_url: str) -> None:
         """
-        Checks validity of configured git repo, as well as if it exists
-        Handles possible existing repo, and prompts (re)download of repo
-        Otherwise it just clones the repo and notifies user
+        Force update an existing git repository by pulling the latest changes.
+
+        :param base_path: The base path where the repository is located.
+        :param repo_url: The URL of the git repository to update.
         """
         if check_valid_http_git_url(repo_url):
             # Calculate folder name from provided URL
@@ -2458,45 +2354,31 @@ class MainContent(QObject):
             if os.path.exists(repo_path):  # If local repo does exists
                 # Clone the repo to storage path and notify user
                 logger.info(f"Force updating git repository at: {repo_path}")
+                repo = Repository(repo_path)
                 try:
-                    # Open repo
-                    repo = Repo(repo_path)
-                    # Determine the target branch name
-                    target_branch = None
-                    for ref in repo.remotes.origin.refs:
-                        if ref.remote_head in ("main", "master"):
-                            target_branch = ref.remote_head
-                            break
-                    if target_branch:
-                        # Checkout the target branch
-                        repo.git.checkout(target_branch)
-                    else:
-                        # Handle the case when the target branch is not found
-                        logger.warning("Target branch not found.")
-                    # Reset the repository to HEAD in case of changes not committed
-                    repo.head.reset(index=True, working_tree=True)
-                    # Perform a pull with rebase
-                    origin = repo.remotes.origin
-                    origin.pull(rebase=True)
-                    # Notify user
-                    dialogue.show_information(
-                        title="Repo force updated",
-                        text="The configured repository was updated!",
-                        information=f"{repo_path} ->\n "
-                        + f"Latest Commit: {repo.head.commit.message.decode() if isinstance(repo.head.commit.message, bytes) else repo.head.commit.message}",
-                    )
-                    # Cleanup
-                    self._do_cleanup_gitpython(repo=repo)
-                except GitCommandError:
-                    stacktrace = traceback.format_exc()
-                    dialogue.show_warning(
-                        title="Failed to update repo!",
-                        text="The configured repo failed to update! "
-                        + "Are you connected to the Internet? "
-                        + "Is your configured repo valid?",
-                        information=f"Configured repository: {repo_url}",
-                        details=stacktrace,
-                    )
+                    for ref in repo.references:
+                        if ref.name == "refs/heads/main":
+                            repo.checkout(ref)
+                            remote = repo.remotes["origin"]
+                            remote.fetch()
+                            remote_master_id = repo.lookup_reference(
+                                "refs/remotes/origin/main"
+                            ).target
+                            merge_result, _ = repo.merge_analysis(remote_master_id)
+                            if merge_result & GIT_MERGE_ANALYSIS_FASTFORWARD:
+                                repo.checkout_tree(repo.get(remote_master_id))
+                                repo.head.set_target(remote_master_id)
+                                logger.info(
+                                    f"Repository {repo_path} updated successfully."
+                                )
+                            else:
+                                logger.info(
+                                    f"Repository {repo_path} is already up to date."
+                                )
+                except GitError as e:
+                    logger.error(f"Failed to update repo {repo_path}: {e}")
+                finally:
+                    self._do_cleanup_pygit2(repo)
             else:
                 answer = dialogue.show_dialogue_conditional(
                     title="Repository does not exist",
@@ -2504,15 +2386,8 @@ class MainContent(QObject):
                     information="Would you like to clone a new copy of this repository?",
                 )
                 if answer == "&Yes":
-                    if GIT_EXISTS:
-                        self._do_clone_repo_to_path(
-                            base_path=base_path,
-                            repo_url=repo_url,
-                        )
-                    else:
-                        self._do_notify_no_git()
+                    self._do_clone_repo_to_path(base_path, repo_url)
         else:
-            # Warn the user so they know to configure in settings
             dialogue.show_warning(
                 title="Invalid repository",
                 text="An invalid repository was detected!",
@@ -2523,157 +2398,60 @@ class MainContent(QObject):
 
     def _do_upload_db_to_repo(self, repo_url: str, file_name: str) -> None:
         """
-        Checks validity of configured git repo, as well as if it exists
-        Commits file & submits PR based on version tag found in DB
+        Upload a database file to the specified git repository.
+
+        :param repo_url: The URL of the git repository to upload to.
+        :param file_name: The name of the database file to upload.
         """
         if (
             repo_url
             and repo_url != ""
             and (repo_url.startswith("http://") or repo_url.startswith("https://"))
         ):
-            # Calculate folder name from provided URL
-            repo_user_or_org = extract_git_user_or_org(repo_url)
             repo_folder_name = extract_git_dir_name(repo_url)
-            # Calculate path from generated folder name
             repo_path = str((AppInfo().databases_folder / repo_folder_name))
             if os.path.exists(repo_path):  # If local repo exists
-                # Update the file, commit + PR to repo
                 logger.info(
                     f"Attempting to commit changes to {file_name} in git repository: {repo_path}"
                 )
+                repo = Repository(repo_path)
                 try:
-                    # Specify the file path relative to the local repository
-                    file_full_path = str((Path(repo_path) / file_name))
-                    if os.path.exists(file_full_path):
-                        # Load JSON data
-                        with open(file_full_path, encoding="utf-8") as f:
-                            json_string = f.read()
-                            logger.debug("Reading info...")
-                            database = json.loads(json_string)
-                            logger.debug("Retrieved database...")
-                        if database.get("version"):
-                            database_version = (
-                                database["version"]
-                                - self.settings_controller.settings.database_expiry
-                            )
-                        elif database.get("timestamp"):
-                            database_version = database["timestamp"]
-                        else:
-                            logger.error(
-                                "Unable to parse version or timestamp from database. Cancelling upload."
-                            )
-                            dialogue.show_warning(
-                                title="Failed to upload database!",
-                                text="The database file does not contain a version or timestamp!",
-                                information=f"File: {file_full_path}",
-                            )
-                            return
-                        # Get the abbreviated timezone
-                        timezone_abbreviation = (
-                            datetime.datetime.now(datetime.timezone.utc)
-                            .astimezone()
-                            .tzinfo
-                        )
-                        database_version_human_readable = (
-                            time.strftime(
-                                "%Y-%m-%d %H:%M:%S", time.localtime(database_version)
-                            )
-                            + f" {timezone_abbreviation}"
-                        )
-                    else:
-                        dialogue.show_warning(
-                            title="File does not exist",
-                            text="Please ensure the file exists and then try to upload again!",
-                            information=f"File not found:\n{file_full_path}\nRepository:\n{repo_url}",
-                        )
-                        return
-
-                    # Create a GitHub instance
-                    g = Github(
+                    index = repo.index
+                    index.add(file_name)
+                    index.write()
+                    author = Signature(
                         self.settings_controller.settings.github_username,
-                        self.settings_controller.settings.github_token,
+                        f"{self.settings_controller.settings.github_username}@users.noreply.github.com",
                     )
-
-                    # Specify the repository
-                    repo = g.get_repo(f"{repo_user_or_org}/{repo_folder_name}")
-
-                    # Specify the branch names
-                    base_branch = "main"
-                    new_branch_name = f"{database_version}"
-
-                    # Specify commit message
-                    commit_message = f"DB Update: {database_version_human_readable}"
-
-                    # Specify the Pull Request fields
-                    pull_request_title = f"DB update {database_version}"
-                    pull_request_body = f"Steam Workshop {commit_message}"
-
-                    # Open repo
-                    local_repo = Repo(repo_path)
-
-                    # Create our new branch and checkout
-                    new_branch = local_repo.create_head(new_branch_name)
-                    local_repo.head.set_reference(ref=new_branch)
-
-                    # Add the file to the index on our new branch
-                    local_repo.index.add([file_full_path])
-
-                    # Commit changes to the new branch
-                    local_repo.index.commit(commit_message)
-                    try:
-                        # Push the changes to the remote repository and create a pull request from new_branch
-                        origin = local_repo.remote()
-                        origin.push(new_branch)
-                    except Exception:
-                        stacktrace = traceback.format_exc()
-                        dialogue.show_warning(
-                            title="Failed to push new branch to repo!",
-                            text=f"Failed to push a new branch {new_branch_name} to {repo_folder_name}! Try to see "
-                            + "if you can manually push + Pull Request. Otherwise, checkout main and try again!",
-                            information=f"Configured repository: {repo_url}",
-                            details=stacktrace,
-                        )
-                    try:
-                        # Create the pull request
-                        pull_request = repo.create_pull(
-                            title=pull_request_title,
-                            body=pull_request_body,
-                            base=base_branch,
-                            head=f"{repo_user_or_org}:{new_branch_name}",
-                        )
-                        pull_request_url = pull_request.html_url
-                    except Exception:
-                        stacktrace = traceback.format_exc()
-                        dialogue.show_warning(
-                            title="Failed to create pull request!",
-                            text=f"Failed to create a pull request for branch {base_branch} <- {new_branch_name}!\n"
-                            + "The branch should be pushed. Check on Github to see if you can manually"
-                            + " make a Pull Request there! Otherwise, checkout main and try again!",
-                            information=f"Configured repository: {repo_url}",
-                            details=stacktrace,
-                        )
-                        self._do_cleanup_gitpython(repo=local_repo)
-                        return
-                    # Cleanup
-                    self._do_cleanup_gitpython(repo=local_repo)
-                    # Notify the pull request URL
-                    answer = dialogue.show_dialogue_conditional(
-                        title="Pull request created",
-                        text="Successfully created pull request!",
-                        information="Do you want to try to open it in your web browser?\n\n"
-                        + f"URL: {pull_request_url}",
+                    committer = Signature(
+                        self.settings_controller.settings.github_username,
+                        f"{self.settings_controller.settings.github_username}@users.noreply.github.com",
                     )
-                    if answer == "&Yes":
-                        # Open the url in user's web browser
-                        open_url_browser(url=pull_request_url)
-                except Exception:
-                    stacktrace = traceback.format_exc()
+                    tree = index.write_tree()
+                    repo.create_commit(
+                        "refs/heads/main",
+                        author,
+                        committer,
+                        f"Update {file_name}",
+                        tree,
+                        [repo.head.target],
+                    )
+                    remote = repo.remotes["origin"]
+                    remote.push(["refs/heads/main"], callbacks=None)
+                    dialogue.show_information(
+                        title="Database uploaded",
+                        text="The database was successfully uploaded to the repository!",
+                        information=f'<a href="{repo_url}">{repo_url}</a>',
+                    )
+                except GitError as e:
+                    logger.error(f"Failed to upload database to repo {repo_url}: {e}")
                     dialogue.show_warning(
-                        title="Failed to update repo!",
-                        text=f"The configured repo failed to update!\nFile name: {file_name}",
-                        information=f"Configured repository: {repo_url}",
-                        details=stacktrace,
+                        title="Failed to upload database",
+                        text="Failed to upload the database to the repository!",
+                        information=f"Error: {e}",
                     )
+                finally:
+                    self._do_cleanup_pygit2(repo)
             else:
                 answer = dialogue.show_dialogue_conditional(
                     title="Repository does not exist",
@@ -2681,33 +2459,16 @@ class MainContent(QObject):
                     information="Would you like to clone a new copy of this repository?",
                 )
                 if answer == "&Yes":
-                    if GIT_EXISTS:
-                        self._do_clone_repo_to_path(
-                            base_path=str(AppInfo().databases_folder),
-                            repo_url=repo_url,
-                        )
-                    else:
-                        self._do_notify_no_git()
+                    self._do_clone_repo_to_path(
+                        base_path=str(AppInfo().databases_folder), repo_url=repo_url
+                    )
         else:
-            # Warn the user so they know to configure in settings
             dialogue.show_warning(
                 title="Invalid repository",
                 text="An invalid repository was detected!",
                 information="Please reconfigure a repository in settings!\n"
                 + 'A valid repository is a repository URL which is not empty and is prefixed with "http://" or "https://"',
             )
-
-    def _do_notify_no_git(self) -> None:
-        answer = dialogue.show_dialogue_conditional(  # We import last so we can use gui + utils
-            title="git not found",
-            text="git executable was not found in $PATH!",
-            information=(
-                "Git integration will not work without Git installed! Do you want to open download page for Git?\n\n"
-                "If you just installed Git, please restart RimSort for the PATH changes to take effect."
-            ),
-        )
-        if answer == "&Yes":
-            open_url_browser("https://git-scm.com/downloads")
 
     def _do_open_rule_editor(
         self, compact: bool, initial_mode: str, packageid: str | None = None
@@ -2989,7 +2750,7 @@ class MainContent(QObject):
         args, ok = dialogue.show_dialogue_input(
             title="Edit Steam WebAPI key",
             label="Enter your personal 32 character Steam WebAPI key here:",
-            text=self.settings_controller.settings.steam_apikey,
+            text=str(self.settings_controller.settings.steam_apikey),
         )
         if ok:
             self.settings_controller.settings.steam_apikey = args
@@ -3297,13 +3058,10 @@ class MainContent(QObject):
 
     @Slot()
     def _on_do_download_community_db_from_github(self) -> None:
-        if GIT_EXISTS:
-            self._do_clone_repo_to_path(
-                base_path=str(AppInfo().databases_folder),
-                repo_url=self.settings_controller.settings.external_community_rules_repo,
-            )
-        else:
-            self._do_notify_no_git()
+        self._do_clone_repo_to_path(
+            base_path=str(AppInfo().databases_folder),
+            repo_url=self.settings_controller.settings.external_community_rules_repo,
+        )
 
     @Slot()
     def _on_do_upload_steam_workshop_db_to_github(self) -> None:
