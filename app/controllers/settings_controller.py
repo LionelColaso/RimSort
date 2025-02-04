@@ -517,6 +517,9 @@ class SettingsController(QObject):
         self.settings_dialog.mod_type_filter_checkbox.setChecked(
             self.settings.mod_type_filter_toggle
         )
+        self.settings_dialog.hide_invalid_mods_when_filtering_checkbox.setChecked(
+            self.settings.hide_invalid_mods_when_filtering_toggle
+        )
         self.settings_dialog.show_duplicate_mods_warning_checkbox.setChecked(
             self.settings.duplicate_mods_warning
         )
@@ -536,6 +539,8 @@ class SettingsController(QObject):
         self.settings_dialog.render_unity_rich_text_checkbox.setChecked(
             self.settings.render_unity_rich_text
         )
+        self.settings_dialog.rentry_auth_code.setText(self.settings.rentry_auth_code)
+        self.settings_dialog.rentry_auth_code.setCursorPosition(0)
         self.settings_dialog.github_username.setText(self.settings.github_username)
         self.settings_dialog.github_username.setCursorPosition(0)
         self.settings_dialog.github_token.setText(self.settings.github_token)
@@ -666,6 +671,9 @@ class SettingsController(QObject):
         self.settings.mod_type_filter_toggle = (
             self.settings_dialog.mod_type_filter_checkbox.isChecked()
         )
+        self.settings.hide_invalid_mods_when_filtering_toggle = (
+            self.settings_dialog.hide_invalid_mods_when_filtering_checkbox.isChecked()
+        )
         self.settings.duplicate_mods_warning = (
             self.settings_dialog.show_duplicate_mods_warning_checkbox.isChecked()
         )
@@ -683,6 +691,7 @@ class SettingsController(QObject):
         self.settings.render_unity_rich_text = (
             self.settings_dialog.render_unity_rich_text_checkbox.isChecked()
         )
+        self.settings.rentry_auth_code = self.settings_dialog.rentry_auth_code.text()
         self.settings.github_username = self.settings_dialog.github_username.text()
         self.settings.github_token = self.settings_dialog.github_token.text()
         run_args_str = ",".join(

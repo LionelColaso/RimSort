@@ -199,8 +199,20 @@ class MainContent(QObject):
             EventBus().do_open_rimsort_logs_directory.connect(
                 self._do_open_rimsort_logs_directory
             )
+            EventBus().do_open_rimworld_directory.connect(
+                self._do_open_rimworld_directory
+            )
+            EventBus().do_open_rimworld_config_directory.connect(
+                self._do_open_rimworld_config_directory
+            )
             EventBus().do_open_rimworld_logs_directory.connect(
                 self._do_open_rimworld_logs_directory
+            )
+            EventBus().do_open_local_mods_directory.connect(
+                self._do_open_local_mods_directory
+            )
+            EventBus().do_open_steam_mods_directory.connect(
+                self._do_open_steam_mods_directory
             )
 
             # Edit Menu bar Eventbus
@@ -442,8 +454,7 @@ class MainContent(QObject):
                 for item in items_to_move:
                     iml.insertItem(count, item)
                     count += 1
-            self.mods_panel.active_mods_list.recalculate_warnings_signal.emit()
-            self.mods_panel.inactive_mods_list.recalculate_warnings_signal.emit()
+        # List error/warnings are automatically recalculated when a mod is inserted/removed from a list
 
     def __handle_inactive_mod_key_press(self, key: str) -> None:
         """
@@ -496,8 +507,7 @@ class MainContent(QObject):
                 for item in items_to_move:
                     aml.insertItem(count, item)
                     count += 1
-            self.mods_panel.active_mods_list.recalculate_warnings_signal.emit()
-            self.mods_panel.inactive_mods_list.recalculate_warnings_signal.emit()
+        # List error/warnings are automatically recalculated when a mod is inserted/removed from a list
 
     def __insert_data_into_lists(
         self, active_mods_uuids: list[str], inactive_mods_uuids: list[str]
@@ -1013,18 +1023,26 @@ class MainContent(QObject):
         if not is_initial:
             try:
                 # Reset the data source filters to default and clear searches
+                # Avoid recalculating warnings/errors when clearing search
+                # Recalculation for each list will be triggered by mods being reinserted into inactive and active lists automatically
                 self.mods_panel.active_mods_filter_data_source_index = len(
                     self.mods_panel.data_source_filter_icons
                 )
-                self.mods_panel.signal_clear_search(list_type="Active")
+                self.mods_panel.signal_clear_search(
+                    list_type="Active", recalculate_list_errors_warnings=False
+                )
                 self.mods_panel.inactive_mods_filter_data_source_index = len(
                     self.mods_panel.data_source_filter_icons
                 )
-                self.mods_panel.signal_clear_search(list_type="Inactive")
+                self.mods_panel.signal_clear_search(
+                    list_type="Inactive", recalculate_list_errors_warnings=False
+                )
+                self.mods_panel.active_mods_filter_data_source_index = len(
+                    self.mods_panel.data_source_filter_icons
+                )
             except Exception as e:
                 logger.warning(f"Error clearing search filters: {str(e)}")
                 # Continue with refresh even if filter clear fails
-
         # Check if paths are set
         if self.check_if_essential_paths_are_set(prompt=is_initial):
             # Run expensive calculations to set cache data
@@ -1352,7 +1370,7 @@ class MainContent(QObject):
 
     def _do_import_list_rentry(self) -> None:
         # Create an instance of RentryImport
-        rentry_import = RentryImport()
+        rentry_import = RentryImport(self.settings_controller)
         # Exit if user cancels or no package IDs
         if not rentry_import.package_ids:
             logger.debug("USER ACTION: pressed cancel or no package IDs, passing")
@@ -1673,7 +1691,7 @@ class MainContent(QObject):
     def _do_open_app_directory(self) -> None:
         app_directory = os.getcwd()
         logger.info(f"Opening app directory: {app_directory}")
-        platform_specific_open(os.getcwd())
+        platform_specific_open(app_directory)
 
     def _do_open_settings_directory(self) -> None:
         settings_directory = AppInfo().app_storage_folder
@@ -1685,27 +1703,63 @@ class MainContent(QObject):
         logger.info(f"Opening RimSort logs directory: {logs_directory}")
         platform_specific_open(logs_directory)
 
+    def _do_open_rimworld_directory(self) -> None:
+        self._open_directory("RimWorld game", "game_folder")
+
+    def _do_open_rimworld_config_directory(self) -> None:
+        self._open_directory("RimWorld config", "config_folder")
+
     def _do_open_rimworld_logs_directory(self) -> None:
         user_home = Path.home()
         logs_directory = None
         if SystemInfo().operating_system == SystemInfo.OperatingSystem.MACOS:
             logs_directory = (
-                f"/{user_home}/Library/Logs/Ludeon Studios/RimWorld by Ludeon Studios"
+                user_home / "Library/Logs/Ludeon Studios/RimWorld by Ludeon Studios"
             )
-            platform_specific_open(Path(logs_directory))
         elif SystemInfo().operating_system == SystemInfo.OperatingSystem.LINUX:
             logs_directory = (
-                f"{user_home}/.config/unity3d/Ludeon Studios/RimWorld by Ludeon Studios"
+                user_home / ".config/unity3d/Ludeon Studios/RimWorld by Ludeon Studios"
             )
-            platform_specific_open(Path(logs_directory))
         elif SystemInfo().operating_system == SystemInfo.OperatingSystem.WINDOWS:
-            logs_directory = f"{user_home}/AppData/LocalLow/Ludeon Studios/RimWorld by Ludeon Studios"
-            platform_specific_open(Path(logs_directory).resolve())
+            logs_directory = (
+                user_home / "AppData/LocalLow/Ludeon Studios/RimWorld by Ludeon Studios"
+            )
 
-        if logs_directory:
+        if logs_directory and logs_directory.exists():
             logger.info(f"Opening RimWorld logs directory: {logs_directory}")
+            platform_specific_open(logs_directory)
         else:
-            logger.error("Could not open RimWorld logs directory on an unknown system")
+            self.show_dialog_specify_paths("RimWorld logs")
+
+    def _do_open_local_mods_directory(self) -> None:
+        self._open_directory("Local mods", "local_folder")
+
+    def _do_open_steam_mods_directory(self) -> None:
+        self._open_directory("Steam mods", "workshop_folder")
+
+    def _open_directory(self, directory_name: str, attribute: str) -> None:
+        current_instance = self.settings_controller.settings.current_instance
+        directory = getattr(
+            self.settings_controller.settings.instances[current_instance],
+            attribute,
+            None,
+        )
+        if directory and os.path.exists(directory):
+            logger.info(f"Opening {directory_name} directory: {directory}")
+            platform_specific_open(directory)
+        else:
+            self.show_dialog_specify_paths(directory_name)
+
+    def show_dialog_specify_paths(self, directory_name: str) -> None:
+        logger.error(f"Could not open {directory_name} directory")
+        answer = dialogue.show_dialogue_conditional(
+            title="Could not open directory",
+            text=f"{directory_name} path does not exist or is not set.",
+            information="Would you like to set the path now?",
+            button_text_override=["Open settings"],
+        )
+        if "settings" in answer:
+            self.settings_controller.show_settings_dialog()
 
     @Slot()
     def _on_do_upload_rimsort_log(self) -> None:
@@ -2225,13 +2279,37 @@ class MainContent(QObject):
                 if os.path.exists(repo_path):
                     repo = Repo(repo_path)
                     try:
+                        # Check if directory has been added to safe directories
+                        """
+                        This is only necessary when a git repo was cloned by a different user.
+
+                        Eg. I download repo on 'D' hard drive on old laptop. Then I put the 'D' drive in new laptop.
+                        When trying to perform an operation on that repo from the new laptop, you get the dubious ownership error.
+
+                        TODO: Include in PyGit2 migration.
+                        NOTE: Try-Except needed because GitPython does not handle it well when no safe directories exist... PyGit2 might be better at it.
+                        """
+                        try:
+                            safe_directories = repo.git.config(
+                                "--global", "--get-all", "safe.directory"
+                            ).splitlines()
+                        except GitCommandError:
+                            logger.debug("No safe directories present")
+                            safe_directories = []  # Allows code below to execute
+
+                        # If not, add it to safe directories
+                        if repo_path not in safe_directories:
+                            repo.git.config(
+                                "--global", "--add", "safe.directory", repo_path
+                            )
+
                         # Fetch the latest changes from the remote
                         origin = repo.remote(name="origin")
                         origin.fetch()
 
                         # Get the local and remote refs
                         local_ref = repo.head.reference
-                        remote_ref = repo.refs[f"origin/{local_ref.name}"]  # type: ignore
+                        remote_ref = repo.refs[f"origin/{local_ref.name}"]
 
                         # Check if the local branch is behind the remote branch
                         if local_ref.commit != remote_ref.commit:
