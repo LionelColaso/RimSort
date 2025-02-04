@@ -2747,6 +2747,11 @@ class ModsPanel(QWidget):
             filters_active (bool): If any filter is active (inc. pattern search).
             recalculate_list_errors_warnings (bool): If the list errors and warnings should be recalculated, defaults to True.
         """
+
+        _filter = None
+        filter_state = None  # The 'Hide Filter' state
+        source_filter = None
+        uuids = None
         # Notify controller when search bar text or any filters change
         if list_type == "Active":
             EventBus().filters_changed_in_active_modlist.emit()
@@ -2754,19 +2759,36 @@ class ModsPanel(QWidget):
             EventBus().filters_changed_in_inactive_modlist.emit()
         # Determine which list to filter
         if list_type == "Active":
-            mod_list = self.active_mods_list
-            data_source_filter = self.active_mods_filter_data_source_index
+            _filter = self.active_mods_search_filter
+            filter_state = self.active_mods_search_filter_state
+            source_filter = self.active_mods_data_source_filter
+            uuids = self.active_mods_list.uuids
+        elif list_type == "Inactive":
+            _filter = self.inactive_mods_search_filter
+            filter_state = self.inactive_mods_search_filter_state
+            source_filter = self.inactive_mods_data_source_filter
+            uuids = self.inactive_mods_list.uuids
         else:
-            mod_list = self.inactive_mods_list
-            data_source_filter = self.inactive_mods_filter_data_source_index
-
-        # Hide items that don't match the search pattern or data source filter
-        for i in range(mod_list.count()):
-            item = mod_list.item(i)
-            if item is None:  # skip if item is None
-                continue
+            raise NotImplementedError(f"Unknown list type: {list_type}")
+        # Evaluate the search filter state for the list
+        search_filter = None
+        if _filter.currentText() == "Name":
+            search_filter = "name"
+        elif _filter.currentText() == "PackageId":
+            search_filter = "packageid"
+        elif _filter.currentText() == "Author(s)":
+            search_filter = "authors"
+        elif _filter.currentText() == "PublishedFileId":
+            search_filter = "publishedfileid"
+        # Filter the list using any search and filter state
+        for uuid in uuids:
+            item = (
+                self.active_mods_list.item(uuids.index(uuid))
+                if list_type == "Active"
+                else self.inactive_mods_list.item(uuids.index(uuid))
+            )
             item_data = item.data(Qt.ItemDataRole.UserRole)
-            metadata = self.metadata_manager.internal_local_metadata[item_data["uuid"]]
+            metadata = self.metadata_manager.internal_local_metadata[uuid]
             if pattern != "":
                 filters_active = True
             # Hide invalid items if enabled in settings
@@ -2785,24 +2807,17 @@ class ModsPanel(QWidget):
             # Check if the item should be filtered or not based on search filter
             if (
                 pattern
-                and metadata.get(SEARCH_DATA_SOURCE_FILTER_INDEXES[data_source_filter])
-                and pattern.lower()
-                not in str(
-                    metadata.get(SEARCH_DATA_SOURCE_FILTER_INDEXES[data_source_filter])
-                ).lower()
+                and metadata.get(search_filter)
+                and pattern.lower() not in str(metadata.get(search_filter)).lower()
             ):
                 item_filtered = True
-            elif (
-                SEARCH_DATA_SOURCE_FILTER_INDEXES[data_source_filter] == "all"
-            ):  # or data source
+            elif source_filter == "all":  # or data source
                 item_filtered = False
-            elif SEARCH_DATA_SOURCE_FILTER_INDEXES[data_source_filter] == "git_repo":
+            elif source_filter == "git_repo":
                 item_filtered = not metadata.get("git_repo")
-            elif SEARCH_DATA_SOURCE_FILTER_INDEXES[data_source_filter] == "steamcmd":
+            elif source_filter == "steamcmd":
                 item_filtered = not metadata.get("steamcmd")
-            elif SEARCH_DATA_SOURCE_FILTER_INDEXES[data_source_filter] != metadata.get(
-                "data_source"
-            ):
+            elif source_filter != metadata.get("data_source"):
                 item_filtered = True
 
             type_filter_index = (
@@ -2810,14 +2825,13 @@ class ModsPanel(QWidget):
                 if list_type == "Active"
                 else self.inactive_data_source_filter_type_index
             )
-
             if type_filter_index == 1 and not metadata.get("csharp"):
                 item_filtered = True
             elif type_filter_index == 2 and metadata.get("csharp"):
                 item_filtered = True
 
             # Check if the item should be filtered or hidden based on filter state
-            if self.active_mods_search_filter_state:
+            if filter_state:
                 item.setHidden(item_filtered)
                 if item_filtered:
                     item_data["hidden_by_filter"] = True
@@ -2832,7 +2846,7 @@ class ModsPanel(QWidget):
             item_data["filtered"] = item_filtered
             item.setData(Qt.ItemDataRole.UserRole, item_data)
         self.mod_list_updated(
-            str(len(mod_list.uuids)),
+            str(len(uuids)),
             list_type,
             recalculate_list_errors_warnings=recalculate_list_errors_warnings,
         )
