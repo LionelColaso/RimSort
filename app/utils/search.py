@@ -116,6 +116,7 @@ class SearchThread(QThread):
         search_text (str): The text to search for
         search_options (Dict[str, bool | str]): Dictionary of search options
         search_path (str): Path to search in
+        search_tool (SearchTool): Reference to the search tool instance
         mods_panel (ModsPanel): Panel for managing mods
         metadata_manager (MetadataManager): Manager for mod metadata
 
@@ -125,6 +126,8 @@ class SearchThread(QThread):
         current_file (Signal): Emits the current file being processed
         file_count (Signal): Emits the total number of files found
     """
+
+    search_tool: "SearchTool"  # Add type hint for search_tool
 
     search_result = Signal(str)
     search_progress = Signal(int)
@@ -137,9 +140,12 @@ class SearchThread(QThread):
         search_text: str,
         search_options: Dict[str, bool | str],
         search_path: str,
+        search_tool: "SearchTool",
     ) -> None:
         self.settings_controller = settings_controller
+        self.search_tool = search_tool
         super().__init__()
+
         self.search_text = (
             search_text.lower()
             if not search_options.get("case_sensitive")
@@ -188,7 +194,7 @@ class SearchThread(QThread):
             logger.debug(f"Skipping large file: {file_path} ({file_size} bytes)")
             return count
 
-        if self.check_search_criteria(file, file_path):
+        if self.search_tool.check_search_criteria(file, file_path):
             count += 1
             logger.debug(f"Processing file: {file_path}")
             self.search_result.emit(file_path)
@@ -279,60 +285,6 @@ class SearchThread(QThread):
             exclude_folders.extend(["Source", "source"])
         return exclude_folders
 
-    def check_search_criteria(self, file: str, file_path: str) -> bool:
-        """
-        Check if a file matches the search criteria.
-
-        Args:
-            file (str): Name of the file
-            file_path (str): Full path to the file
-
-        Returns:
-            bool: True if file matches criteria, False otherwise
-
-        Raises:
-            FileNotFoundError: If file cannot be found
-            IOError: If file cannot be read
-            OSError: For other file system related errors
-        """
-
-        if self.search_options["search_type"] == "File and Folder Names":
-            logger.debug(f"Checking file: {file}")
-            return self.search_text in file.lower()
-        elif self.search_options["search_type"] == "Inside All Files":
-            try:
-                # Check file size before reading (limit to 10MB)
-                file_size = os.path.getsize(file_path)
-                if file_size > 10 * 1024 * 1024:  # 10MB
-                    logger.warning(
-                        f"Skipping large file: {file_path} ({file_size} bytes)"
-                    )
-                    return False
-
-                # Use memory-mapped file for efficient large file reading
-                import mmap
-
-                search_bytes = self.search_text.lower().encode()
-                with open(file_path, "r+b") as f:
-                    # Memory-map the file
-                    mmapped_file = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-                    try:
-                        # Convert mmap content to lowercase bytes for comparison
-                        file_content = mmapped_file.read().lower()
-                        if search_bytes in file_content:
-                            return True
-                        return False
-                    finally:
-                        mmapped_file.close()
-
-            except (FileNotFoundError, IOError, OSError) as e:
-                logger.error(f"Error reading {file_path}: {e}")
-                self.search_result.emit(f"Error: Could not read file {file_path}")
-                return False
-        elif self.search_options["search_type"] == ".xml Extensions Only":
-            return file.endswith(".xml")
-        return False
-
 
 class SearchTool(QMainWindow):
     """
@@ -367,6 +319,8 @@ class SearchTool(QMainWindow):
         self.mods_panel: ModsPanel = ModsPanel(
             settings_controller=self.settings_controller,
         )
+        self.search_options: Dict[str, bool | str] = {}
+
         self.metadata_manager: metadata.MetadataManager = (
             metadata.MetadataManager.instance()
         )
@@ -571,7 +525,7 @@ class SearchTool(QMainWindow):
 
         search_path = self.get_default_search_path()
         self.search_thread = SearchThread(
-            self.settings_controller, search_text, search_options, search_path
+            self.settings_controller, search_text, search_options, search_path, self
         )
 
         self.search_thread.search_result.connect(self.display_search_result)
@@ -683,45 +637,155 @@ class SearchTool(QMainWindow):
     def clear_results(self) -> None:
         self.search_results_table.setRowCount(0)
 
+    def check_search_criteria(self, file: str, file_path: str) -> bool:
+        """
+        Check if a file matches the search criteria.
+
+        Args:
+            file (str): Name of the file
+            file_path (str): Full path to the file
+
+        Returns:
+            bool: True if file matches criteria, False otherwise
+
+        Raises:
+            FileNotFoundError: If file cannot be found
+            IOError: If file cannot be read
+            OSError: For other file system related errors
+        """
+
+        if self.search_options["search_type"] == "File and Folder Names":
+            logger.debug(f"Checking file: {file}")
+            return self.search_text.text().lower() in file.lower()
+
+        elif self.search_options["search_type"] == "Inside All Files":
+            try:
+                # Check file size before reading (limit to 10MB)
+                file_size = os.path.getsize(file_path)
+                if file_size > 10 * 1024 * 1024:  # 10MB
+                    logger.warning(
+                        f"Skipping large file: {file_path} ({file_size} bytes)"
+                    )
+                    return False
+
+                # Use memory-mapped file for efficient large file reading
+                import mmap
+
+                search_bytes = self.search_text.text().lower().encode()
+
+                with open(file_path, "r+b") as f:
+                    # Memory-map the file
+                    mmapped_file = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+                    try:
+                        # Convert mmap content to lowercase bytes for comparison
+                        file_content = mmapped_file.read().lower()
+                        if search_bytes in file_content:
+                            return True
+                        return False
+                    finally:
+                        mmapped_file.close()
+
+            except (FileNotFoundError, IOError, OSError) as e:
+                logger.error(f"Error reading {file_path}: {e}")
+                logger.error(f"Error: Could not read file {file_path}")
+
+                return False
+        elif self.search_options["search_type"] == ".xml Extensions Only":
+            return file.endswith(".xml")
+        return False
+
     def list_extensions(self, extension: str) -> None:
         folder = self.get_default_search_path()
         if not folder:
             return
 
-        extensions = [
-            file
-            for root, dirs, files in os.walk(folder)
-            for file in files
-            if file.endswith("." + extension)
-        ]
         self.clear_results()
+        count = 0
 
-        if extensions:
+        # Create search options for extension search
+        self.search_options = {
+            "folder": folder,
+            "search_type": "File and Folder Names",
+            "case_sensitive": False,
+            "include_git": True,
+            "include_languages": True,
+            "include_source": True,
+        }
+
+        # Collect all files matching the extension
+        for root, dirs, files in os.walk(folder):
+            for file in files:
+                if file.endswith("." + extension):
+                    full_path = os.path.join(root, file)
+                    path = Path(full_path)
+
+                    # Use check_search_criteria to verify the file matches
+                    if self.check_search_criteria(file, full_path):
+                        # Get mod name using the same pattern as display_search_result
+                        mod_name = "Unknown Mod"
+                        try:
+                            # First try to get mod name from active mods list
+                            if hasattr(self.mods_panel.active_mods_list, "uuids"):
+                                for uuid in self.mods_panel.active_mods_list.uuids:
+                                    mod_data = self.metadata_manager.internal_local_metadata.get(
+                                        uuid
+                                    )
+                                    if mod_data:
+                                        mod_path = mod_data.get("path", "")
+                                        if mod_path and full_path.startswith(mod_path):
+                                            mod_name = mod_data.get(
+                                                "name",
+                                                path.parent.name or "Unknown Mod",
+                                            )
+                                            break
+                            # Fallback to searching all metadata if not found in active mods
+                            if mod_name == "Unknown Mod":
+                                for (
+                                    uuid,
+                                    mod_data,
+                                ) in self.metadata_manager.internal_local_metadata.items():
+                                    mod_path = mod_data.get("path", "")
+                                    if mod_path and full_path.startswith(mod_path):
+                                        mod_name = mod_data.get(
+                                            "name", path.parent.name or "Unknown Mod"
+                                        )
+                                        break
+                        except Exception as e:
+                            logger.error(f"Error getting mod name: {e}")
+                            # Fallback to directory name if metadata lookup fails
+                            mod_name = (
+                                path.parent.name if path.parent.name else "Unknown Mod"
+                            )
+
+                        # Add to results table
+                        self.search_results_table.insertRow(
+                            self.search_results_table.rowCount()
+                        )
+                        self.search_results_table.setItem(
+                            self.search_results_table.rowCount() - 1,
+                            0,
+                            QTableWidgetItem(mod_name),
+                        )
+                        self.search_results_table.setItem(
+                            self.search_results_table.rowCount() - 1,
+                            1,
+                            QTableWidgetItem(file),
+                        )
+                        self.search_results_table.setItem(
+                            self.search_results_table.rowCount() - 1,
+                            2,
+                            QTableWidgetItem(full_path),
+                        )
+                        count += 1
+
+        if count == 0:
             self.search_results_table.insertRow(self.search_results_table.rowCount())
             self.search_results_table.setItem(
                 self.search_results_table.rowCount() - 1,
                 0,
-                QTableWidgetItem(f"List of .{extension} Extensions:"),
+                QTableWidgetItem(f"No files found with the .{extension} extension."),
             )
-            for ext in extensions:
-                full_path = os.path.join(folder, ext)
-                mod_name = os.path.basename(os.path.dirname(full_path))
-                self.search_results_table.insertRow(
-                    self.search_results_table.rowCount()
-                )
-                self.search_results_table.setItem(
-                    self.search_results_table.rowCount() - 1,
-                    0,
-                    QTableWidgetItem(mod_name),
-                )
-                self.search_results_table.setItem(
-                    self.search_results_table.rowCount() - 1, 1, QTableWidgetItem(ext)
-                )
-                self.search_results_table.setItem(
-                    self.search_results_table.rowCount() - 1,
-                    2,
-                    QTableWidgetItem(full_path),
-                )
+
         else:
             self.search_results_table.insertRow(self.search_results_table.rowCount())
             self.search_results_table.setItem(
@@ -731,7 +795,12 @@ class SearchTool(QMainWindow):
             )
 
     def _generate_search_path(self) -> None:
-        """Generate search paths based on selected mod scope."""
+        """
+        Generate search paths based on selected mod scope.
+
+        This method creates a temporary file containing the paths to search based on the selected mod settings.
+        """
+
         if os.path.exists(self.search_txt_path):
             os.remove(self.search_txt_path)
         if self.mod_select_combo.currentText() == "All Mods":
