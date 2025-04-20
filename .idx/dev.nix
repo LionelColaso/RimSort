@@ -16,6 +16,7 @@
     pkgs.zstd
     pkgs.glib
     pkgs.gcc
+    pkgs.ccache
   ];
 
   # Sets environment variables in the workspace
