@@ -12,6 +12,10 @@
     # pkgs.nodejs_20
     # pkgs.nodePackages.nodemon
     pkgs.virtualenv
+    pkgs.patchelf
+    pkgs.zstd
+    pkgs.glib
+    pkgs.gcc
   ];
 
   # Sets environment variables in the workspace
