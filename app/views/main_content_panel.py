@@ -37,10 +37,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QProgressBar,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
 )
 
 import app.utils.constants as app_constants
@@ -377,7 +373,7 @@ class MainContent(QObject):
             # Instantiate todds runner
             self.todds_runner: RunnerPanel | None = None
 
-            self.progress_window: ProgressWindow = ProgressWindow()
+            # Instantiate ZipExtractThread
             self._extract_thread: ZipExtractThread | None = None
 
             logger.info("Finished MainContent initialization")
@@ -2793,17 +2789,8 @@ class MainContent(QObject):
         self._extract_thread = ZipExtractThread(
             file_path, base_path, overwrite_all=overwrite, delete=delete
         )
-        self._extract_thread.progress.connect(self._on_extract_progress)
         self._extract_thread.finished.connect(self._on_extract_finished)
-
-        self.progress_window.progressBar.setValue(0)
-        self.progress_window.cancel_button.clicked.connect(self._extract_thread.stop)
-
         self._extract_thread.start()
-
-    def _on_extract_progress(self, percent: int) -> None:
-        self.progress_window.setVisible(True)
-        self.progress_window.progressBar.setValue(percent)
 
     def _on_extract_finished(self, success: bool, message: str) -> None:
         if success:
@@ -2818,7 +2805,6 @@ class MainContent(QObject):
                 text=self.tr("An error occurred during extraction."),
                 information=message,
             )
-        self.progress_window.setVisible(False)
 
     def _do_force_update_existing_repo(self, base_path: str, repo_url: str) -> None:
         """
@@ -3932,23 +3918,3 @@ class ZipExtractThread(QThread):
 
     def stop(self) -> None:
         self._should_abort = True
-
-
-class ProgressWindow(QWidget):
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowTitle("Extract Zip")
-        self.resize(300, 100)
-
-        self.progressBar = QProgressBar()
-        self.progressBar.setMinimum(0)
-        self.progressBar.setMaximum(100)
-        self.progressBar.setValue(0)
-        self.progressBar.setVisible(True)
-
-        self.cancel_button = QPushButton("Cancel")
-
-        layout = QVBoxLayout()
-        layout.addWidget(self.progressBar)
-        self.setLayout(layout)
-        layout.addWidget(self.cancel_button)
