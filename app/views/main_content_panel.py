@@ -784,7 +784,7 @@ class MainContent(QObject):
             logger.warning("Unable to retrieve latest release information")
             self.show_update_error()
             return
-        tag_name_updated = tag_name.replace("alpha", "Alpha")
+        tag_name_updated = tag_name  # tag_name.replace("alpha", "Alpha")
         install_path = os.getcwd()
         logger.debug(f"Current RimSort github release found: {tag_name}")
         logger.debug(f"Current RimSort installed version found: {current_version}")
@@ -800,8 +800,8 @@ class MainContent(QObject):
             )
             if answer == "&Yes":
                 logger.debug("User selected to update RimSort")
-                open_url_browser("https://github.com/RimSort/RimSort/releases")
-                return  # Remove this and above line to enable auto-update
+                # open_url_browser("https://github.com/RimSort/RimSort/releases")
+                # return  # Remove this and above line to enable auto-update
                 # TODO : Implement auto-update currenty disabled since it has issues on linux
                 # Setup environment
                 ARCH = platform.architecture()[0]
@@ -848,6 +848,7 @@ class MainContent(QObject):
                     logger.warning(f"Unsupported system {SYSTEM} {ARCH} {PROCESSOR}")
                     return
                 # Try to find a valid release from our generated archive name
+                browser_download_url = ""
                 for asset in json_response["assets"]:
                     if asset["name"] == target_archive:
                         browser_download_url = asset["browser_download_url"]
@@ -1242,7 +1243,9 @@ class MainContent(QObject):
         success, new_order = sorter.sort()
 
         # Log the sort result and the order
-        logger.debug(f"Sort result: {success}, new order: {new_order}, current order: {current_order}")
+        logger.debug(
+            f"Sort result: {success}, new order: {new_order}, current order: {current_order}"
+        )
         # Check if successful and orders differ
         if success and new_order != current_order:
             logger.info(
