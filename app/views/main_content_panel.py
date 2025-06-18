@@ -1242,7 +1242,9 @@ class MainContent(QObject):
         success, new_order = sorter.sort()
 
         # Log the sort result and the order
-        logger.debug(f"Sort result: {success}, new order: {new_order}, current order: {current_order}")
+        logger.debug(
+            f"Sort result: {success}, new order: {new_order}, current order: {current_order}"
+        )
         # Check if successful and orders differ
         if success and new_order != current_order:
             logger.info(
@@ -3198,10 +3200,17 @@ class MainContent(QObject):
 
     @Slot()
     def _do_run_game(self) -> None:
+        import platform
+
         current_instance = self.settings_controller.settings.current_instance
         game_install_path = Path(
             self.settings_controller.settings.instances[current_instance].game_folder
         )
+
+        # Remove ".app" suffix if on Darwin (macOS)
+        if platform.system() == "Darwin" and str(game_install_path).endswith(".app"):
+            game_install_path = Path(str(game_install_path)[:-4])
+
         # Run args is inconsistent and is sometimes a string and sometimes a list
         run_args: list[str] | str = self.settings_controller.settings.instances[
             current_instance
