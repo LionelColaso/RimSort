@@ -21,6 +21,7 @@ class WatchdogHandler(FileSystemEventHandler, QObject):
     mod_created = Signal(str, str, str)
     mod_deleted = Signal(str, str, str)
     mod_updated = Signal(bool, bool, str, str, str)
+    player_log_changed = Signal()  # New signal for Player.log changes
 
     def __init__(
         self, settings_controller: SettingsController, targets: list[str]
@@ -54,6 +55,9 @@ class WatchdogHandler(FileSystemEventHandler, QObject):
         # Mod directory monitoring
         self.watchdog_mods_observer: BaseObserver | None
         self.watchdog_mods_observer = Observer()
+        # Player.log monitoring
+        self.player_log_observer: BaseObserver | None = None
+        self.player_log_path: str | None = None
         # Keep track of cooldowns for each uuid
         self.cooldown_timers: dict[str, Any] = {}
         self.__add_acf_observers()
