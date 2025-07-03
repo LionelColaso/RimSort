@@ -48,6 +48,7 @@ from app.views.file_search_dialog import FileSearchDialog
 from app.views.log_reader import LogReader
 from app.views.main_content_panel import MainContent
 from app.views.menu_bar import MenuBar
+from app.views.player_log_tab import PlayerLogTab
 from app.views.status_panel import Status
 from app.views.troubleshooting_dialog import TroubleshootingDialog
 
@@ -154,6 +155,10 @@ class MainWindow(QMainWindow):
         self.log_reader_layout.addWidget(self.log_reader)
 
         self.tab_widget.addTab(self.log_reader_tab, self.tr("Log Reader"))
+
+        # Create and add the Player Log tab
+        self.player_log_widget = PlayerLogTab(self.settings_controller)
+        self.tab_widget.addTab(self.player_log_widget, self.tr("Player Log"))
 
         # Create and add the Search tab
         self.file_search_tab = QWidget()
