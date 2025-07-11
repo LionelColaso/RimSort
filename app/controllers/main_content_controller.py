@@ -1,5 +1,6 @@
 import datetime
 import json
+import os
 import time
 from pathlib import Path
 from typing import List, Optional, cast
@@ -39,6 +40,34 @@ from app.views.dialogue import (
     show_internet_connection_error,
 )
 from app.views.main_content_panel import MainContent
+
+try:
+    # Set SSL certificate locations to system default or custom paths
+    # You may adjust these paths based on your system configuration
+    cert_file = None
+    cert_dir = None
+
+    # Common locations for certificates on Windows, macOS, Linux
+    if os.name == "nt":
+        # Windows: Use certifi package or system store (adjust if needed)
+        try:
+            import certifi
+
+            cert_file = certifi.where()
+        except ImportError:
+            pass
+    else:
+        # Unix-like systems: common cert locations
+        cert_file = "/etc/ssl/certs/ca-certificates.crt"
+        cert_dir = "/etc/ssl/certs"
+
+    if cert_file is not None and cert_dir is not None:
+        pygit2.settings.set_ssl_cert_locations(cert_file, cert_dir)
+except ImportError:
+    # pygit2 not installed, skip
+    pass
+except Exception as e:
+    logger.warning(f"Failed to set pygit2 SSL certificate locations: {e}")
 
 
 class MainContentController(QObject):
