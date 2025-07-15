@@ -90,7 +90,7 @@ class Settings(QObject):
 
         # Theme
         self.enable_themes: bool = True
-        self.theme_name: str = "RimPy"
+        self.theme_name: str = "RimSort"
 
         self.font_family: str = QApplication.font().family()
         self.font_size: int = 12

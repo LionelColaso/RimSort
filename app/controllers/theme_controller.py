@@ -12,11 +12,11 @@ from app.views.settings_dialog import SettingsDialog
 
 
 class ThemeController:
-    def __init__(self, default_theme: str = "RimPy") -> None:
+    def __init__(self, default_theme: str = "RimSort") -> None:
         """Initialize the ThemeController with a default theme.
 
         Args:
-            default_theme (str): The name of the default theme. Defaults to "RimPy".
+            default_theme (str): The name of the default theme. Defaults to "RimSort".
         """
         self.app_info = AppInfo()
         self.app_instance = QApplication.instance()
