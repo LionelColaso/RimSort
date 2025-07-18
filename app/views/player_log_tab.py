@@ -550,18 +550,38 @@ class PlayerLogTab(QWidget):
             if self.player_log_path is None:
                 return
             current_size = self.player_log_path.stat().st_size
+            logger.debug(
+                f"on_file_changed: current_size={current_size}, last_log_size={self.last_log_size}"
+            )
             with open(
                 self.player_log_path, "r", encoding="utf-8", errors="ignore"
             ) as f:
-                if current_size < self.last_log_size:
-                    # File was truncated or reset, reload entire content
-                    content = f.read()
-                    self.current_log_content = content
-                    self.last_log_size = current_size
+                content = f.read()
+                signature_start = "Mono path"
+                pos = content.find(signature_start)
+                if pos != -1 and (not self.current_log_content.startswith(signature_start) or pos != 0):
+                    logger.debug(f"Log reset signature detected at position {pos}.")
+                    # Log reset detected, reset current content from signature position
+                    self.current_log_content = content[pos:]
+                    self.last_log_size = len(self.current_log_content)
+                    # Reset filter to "All Entries" to avoid empty filtered content
+                    if self.filter_combo and self.filter_combo.currentText() != "All Entries":
+                        self.filter_combo.setCurrentText("All Entries")
+                    self.filtered_content = ""
+                    self.log_display.clear()
                 else:
-                    f.seek(self.last_log_size)
-                    new_content = f.read()
-                    if new_content:
+                    # Append new content if file size increased
+                    if current_size < self.last_log_size:
+                        # File truncated but signature not found, reload entire content
+                        self.current_log_content = content
+                        self.last_log_size = current_size
+                        if self.filter_combo and self.filter_combo.currentText() != "All Entries":
+                            self.filter_combo.setCurrentText("All Entries")
+                        self.filtered_content = ""
+                        self.log_display.clear()
+                    elif current_size > self.last_log_size:
+                        new_content = content[self.last_log_size:]
+                        logger.debug(f"Appending {len(new_content)} bytes of new log content.")
                         self.current_log_content += new_content
                         self.last_log_size += len(new_content)
             self._analyze_log_content(self.current_log_content)
@@ -688,6 +708,16 @@ class PlayerLogTab(QWidget):
 
             def on_modified(self, event: FileSystemEvent) -> None:
                 if event.src_path == str(self.outer.player_log_path):
+                    self.outer.file_changed_signal.emit()
+
+            def on_created(self, event: FileSystemEvent) -> None:
+                if event.src_path == str(self.outer.player_log_path):
+                    self.outer.last_log_size = 0
+                    self.outer.file_changed_signal.emit()
+
+            def on_moved(self, event: FileSystemEvent) -> None:
+                if event.dest_path == str(self.outer.player_log_path):
+                    self.outer.last_log_size = 0
                     self.outer.file_changed_signal.emit()
 
         self.file_changed_signal.connect(self.on_file_changed)
@@ -963,7 +993,10 @@ class PlayerLogTab(QWidget):
             if include_line:
                 filtered_lines.append(line)
 
-        self.filtered_content = "\n".join(filtered_lines)
+        # Add line numbers to filtered lines
+        numbered_lines = [f"{idx + 1}: {line}" for idx, line in enumerate(filtered_lines)]
+
+        self.filtered_content = "\n".join(numbered_lines)
         self.log_display.setPlainText(self.filtered_content)
 
         current_search_text = self.search_input.text() if self.search_input else ""
