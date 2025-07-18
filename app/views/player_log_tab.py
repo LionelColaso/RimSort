@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from loguru import logger
-from PySide6.QtCore import QObject, QPoint, QRegularExpression, Qt, QTimer
+from PySide6.QtCore import QObject, QPoint, QRegularExpression, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -195,26 +195,19 @@ class PlayerLogTab(QWidget):
 
     def _highlight_quick_navigation(self, color: QColor) -> None:
         """Highlight quick navigation matches with the given color."""
-        # This method will update the highlighting for quick navigation buttons
-        # We will extend the LogHighlighter to support this or implement here
-        # For now, just rehighlight to apply the color
         self.highlighter.set_highlight_color(color)
         self.search_text_changed(self.search_input.text() if self.search_input else "")
-        # Additional logic to highlight quick navigation patterns can be added here
 
     def clear_log_display(self) -> None:
-        """Clear the log display widget."""
         self.log_display.clear()
 
     def scroll_to_end(self) -> None:
-        """Scroll to the end of the log display."""
         cursor = self.log_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.log_display.setTextCursor(cursor)
         self.log_display.ensureCursorVisible()
 
     def _get_player_log_path(self) -> Optional[Path]:
-        """Get the path to the Player.log file based on current instance settings."""
         try:
             current_instance: str = self.settings_controller.settings.current_instance
             config_folder: str = self.settings_controller.settings.instances[
@@ -228,7 +221,6 @@ class PlayerLogTab(QWidget):
         return None
 
     def pick_highlight_color(self) -> None:
-        """Open a color picker dialog to select the highlight color."""
         color = QColorDialog.getColor(
             self.highlighter.search_format.background().color(),
             self,
@@ -238,7 +230,6 @@ class PlayerLogTab(QWidget):
             self.set_highlight_color(color)
 
     def init_ui(self) -> None:
-        """Initialize the UI components and layout."""
         self.main_layout = QVBoxLayout()
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -282,13 +273,13 @@ class PlayerLogTab(QWidget):
         self.main_layout.addWidget(self.splitter)
         self.setLayout(self.main_layout)
 
-        # Use QTabWidget to organize left panel controls
         self.tabs = QTabWidget()
         self.left_layout.addWidget(self.tabs)
 
         # File info group
-        file_info_group = QWidget()
-        file_info_layout = QVBoxLayout(file_info_group)
+        file_info_group = QGroupBox("File Info")
+        file_info_layout = QVBoxLayout()
+        file_info_group.setLayout(file_info_layout)
 
         self.file_path_label = QLabel("Path:")
         self.file_path_label.setWordWrap(True)
@@ -309,7 +300,8 @@ class PlayerLogTab(QWidget):
 
         # Statistics group
         stats_group = QGroupBox("Statistics")
-        stats_layout = QVBoxLayout(stats_group)
+        stats_layout = QVBoxLayout()
+        stats_group.setLayout(stats_layout)
 
         self.total_lines_label = QLabel("Total Lines: 0")
         self.info_label = QLabel("Info: 0")
@@ -333,9 +325,9 @@ class PlayerLogTab(QWidget):
 
         # Controls group
         controls_group = QGroupBox("Controls")
-        controls_layout = QVBoxLayout(controls_group)
+        controls_layout = QVBoxLayout()
+        controls_group.setLayout(controls_layout)
 
-        # Checkbox for auto load default log
         self.auto_load_player_log_on_startup_checkbox = QCheckBox(
             "Auto Load Game Log on Startup"
         )
@@ -353,7 +345,6 @@ class PlayerLogTab(QWidget):
         )
         controls_layout.addWidget(self.real_time_monitor_checkbox)
 
-        # Buttons for loading logs
         load_buttons_layout = QHBoxLayout()
         self.load_default_button = QPushButton("Load Game Log")
         self.load_default_button.setToolTip("Loads the game's Player.log file.")
@@ -388,7 +379,8 @@ class PlayerLogTab(QWidget):
 
         # Search group
         search_group = QGroupBox("Search")
-        search_layout = QVBoxLayout(search_group)
+        search_layout = QVBoxLayout()
+        search_group.setLayout(search_layout)
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search log entries...")
@@ -399,7 +391,6 @@ class PlayerLogTab(QWidget):
         self._search_debounce_timer.timeout.connect(self._do_search_text_changed)
 
         search_layout.addWidget(self.search_input)
-        search_layout.addLayout(search_layout)
 
         search_nav_layout = QHBoxLayout()
         self.color_picker_button = QPushButton("Highlight Color")
@@ -428,7 +419,8 @@ class PlayerLogTab(QWidget):
 
         # Filter group
         filter_group = QGroupBox("Filter")
-        filter_layout = QHBoxLayout(filter_group)
+        filter_layout = QHBoxLayout()
+        filter_group.setLayout(filter_layout)
 
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(
@@ -454,7 +446,9 @@ class PlayerLogTab(QWidget):
 
         # Quick navigation group
         nav_group = QGroupBox("Quick Navigation")
-        nav_layout = QGridLayout(nav_group)
+        nav_layout = QGridLayout()
+        nav_group.setLayout(nav_layout)
+
         self.goto_error_prev_btn = QPushButton("Previous Error")
         self.goto_error_prev_btn.setToolTip("Jump to previous error entry")
         self.goto_error_prev_btn.clicked.connect(
@@ -557,39 +551,68 @@ class PlayerLogTab(QWidget):
                 self.player_log_path, "r", encoding="utf-8", errors="ignore"
             ) as f:
                 content = f.read()
-                signature_start = "Mono path"
-                pos = content.find(signature_start)
-                if pos != -1 and (not self.current_log_content.startswith(signature_start) or pos != 0):
-                    logger.debug(f"Log reset signature detected at position {pos}.")
-                    # Log reset detected, reset current content from signature position
-                    self.current_log_content = content[pos:]
-                    self.last_log_size = len(self.current_log_content)
-                    # Reset filter to "All Entries" to avoid empty filtered content
-                    if self.filter_combo and self.filter_combo.currentText() != "All Entries":
+                logger.debug("File changed signal received, processing log update.")
+                if current_size < self.last_log_size:
+                    logger.debug(
+                        "File size smaller than last log size, treating as reset."
+                    )
+                    self.current_log_content = content
+                    self.last_log_size = current_size
+                    if (
+                        self.filter_combo
+                        and self.filter_combo.currentText() != "All Entries"
+                    ):
                         self.filter_combo.setCurrentText("All Entries")
                     self.filtered_content = ""
                     self.log_display.clear()
                 else:
-                    # Append new content if file size increased
-                    if current_size < self.last_log_size:
-                        # File truncated but signature not found, reload entire content
-                        self.current_log_content = content
-                        self.last_log_size = current_size
-                        if self.filter_combo and self.filter_combo.currentText() != "All Entries":
+                    lines = content.splitlines()
+                    reset_index = -1
+                    for i in range(len(lines) - 1, -1, -1):
+                        if lines[i].startswith("Mono path"):
+                            reset_index = i
+                            break
+                    if reset_index != -1 and not self.current_log_content.startswith(
+                        "Mono path"
+                    ):
+                        logger.debug(
+                            f"Log reset signature detected at line {reset_index}. Resetting log content."
+                        )
+                        self.current_log_content = "\n".join(lines[reset_index:])
+                        self.last_log_size = len(self.current_log_content)
+                        if (
+                            self.filter_combo
+                            and self.filter_combo.currentText() != "All Entries"
+                        ):
                             self.filter_combo.setCurrentText("All Entries")
                         self.filtered_content = ""
                         self.log_display.clear()
-                    elif current_size > self.last_log_size:
-                        new_content = content[self.last_log_size:]
-                        logger.debug(f"Appending {len(new_content)} bytes of new log content.")
+                    new_content = ""
+                    if current_size > self.last_log_size:
+                        new_content = content[self.last_log_size :]
+                        # Fix string formatting warning by using !r to get repr of bytes
+                        logger.debug(
+                            f"Appending {len(new_content)} bytes of new log content: {new_content!r}"
+                        )
+                        if isinstance(new_content, bytes):
+                            new_content = new_content.decode("utf-8", errors="ignore")
+                    if new_content.startswith("Mono path"):
+                        self.current_log_content = new_content
+                    else:
                         self.current_log_content += new_content
-                        self.last_log_size += len(new_content)
+                    self.last_log_size = current_size
             self._analyze_log_content(self.current_log_content)
             self._update_statistics()
             self.apply_filter()
             self.scroll_to_end()
         except Exception as e:
-            logger.error(f"Error reading appended log content: {e}")
+            # Fix string formatting warning by decoding bytes if needed and avoid incompatible assignment
+            error_message: str
+            if isinstance(e, bytes):
+                error_message = e.decode("utf-8", errors="ignore")
+            else:
+                error_message = str(e)
+            logger.error(f"Error reading appended log content: {error_message}")
 
     def _on_search_text_changed_debounced(self, text: str) -> None:
         self._pending_search_text = text
@@ -609,7 +632,6 @@ class PlayerLogTab(QWidget):
         menu.exec(self.log_display.mapToGlobal(pos))
 
     def goto_first_pattern(self, pattern: str) -> None:
-        """Navigate to the first occurrence of a regex pattern."""
         document = self.log_display.document()
         regex = QRegularExpression(pattern)
         cursor = document.find(regex)
@@ -622,13 +644,10 @@ class PlayerLogTab(QWidget):
             show_information("Pattern not found in the current view.")
 
     def goto_previous_pattern(self, pattern: str) -> None:
-        """Navigate to the previous occurrence of a regex pattern."""
         document = self.log_display.document()
         regex = QRegularExpression(pattern)
         cursor = self.log_display.textCursor()
 
-        # Search backward from current cursor position
-        # Qt.FindBackward is not available, so implement manual backward search
         pos = cursor.position()
         found_cursor = None
         while True:
@@ -636,9 +655,7 @@ class PlayerLogTab(QWidget):
             if found.isNull() or found.position() >= pos:
                 break
             found_cursor = found
-            pos = (
-                found.position() + 1
-            )  # Move forward to find next match before original pos
+            pos = found.position() + 1
 
         if found_cursor and not found_cursor.isNull():
             self._apply_quick_nav_highlight(found_cursor)
@@ -648,7 +665,6 @@ class PlayerLogTab(QWidget):
             show_information("Pattern not found in the current view.")
 
     def _update_match_count(self) -> None:
-        """Update the match count label."""
         if self.matches:
             self.match_count_label.setText(
                 f"{self.current_match_index + 1}/{len(self.matches)}"
@@ -657,50 +673,46 @@ class PlayerLogTab(QWidget):
             self.match_count_label.setText("0/0")
 
     def search_text_changed(self, text: str) -> None:
-        """Handle search text changes, highlight and index matches for navigation."""
+        """Update search matches and highlight based on the search text."""
         self.matches = []
         self.current_match_index = -1
         self.highlighter.set_search_term(text)
 
-        if text:
-            doc = self.log_display.document()
-            cursor = QTextCursor(doc)
-            cursor.movePosition(QTextCursor.MoveOperation.Start)
-            while True:
-                found = doc.find(text, cursor)
-                if found.isNull():
-                    break
-                self.matches.append(QTextCursor(found))
-                cursor.setPosition(found.position() + len(text))
+        if not text:
+            self._update_match_count()
+            return
+
+        doc = self.log_display.document()
+        cursor = QTextCursor(doc)
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        while True:
+            found = doc.find(text, cursor)
+            if found.isNull():
+                break
+            self.matches.append(QTextCursor(found))
+            cursor.setPosition(found.position() + len(text))
         self._update_match_count()
 
     def highlight_current_match(self) -> None:
-        """Highlight the current search match."""
         if self.matches and 0 <= self.current_match_index < len(self.matches):
             self.log_display.setTextCursor(self.matches[self.current_match_index])
             self.log_display.ensureCursorVisible()
 
     def goto_next_match(self) -> None:
-        """Navigate to the next search match."""
         if not self.matches:
             return
         self.current_match_index = (self.current_match_index + 1) % len(self.matches)
         self.highlight_current_match()
 
     def goto_previous_match(self) -> None:
-        """Navigate to the previous search match."""
         if not self.matches:
             return
         self.current_match_index = (self.current_match_index - 1) % len(self.matches)
         self.highlight_current_match()
 
-    from PySide6.QtCore import Signal
-
     file_changed_signal = Signal()
 
     def init_file_watcher(self) -> None:
-        """Initialize the watchdog file watcher for real-time log updates."""
-
         class PlayerLogHandler(FileSystemEventHandler):
             def __init__(self, outer: "PlayerLogTab") -> None:
                 self.outer = outer
@@ -728,32 +740,29 @@ class PlayerLogTab(QWidget):
             self._observer.schedule(
                 self._event_handler, str(self.player_log_path.parent), recursive=False
             )
-            # Run observer in a separate thread to avoid blocking UI
             self._observer_thread = threading.Thread(
                 target=self._observer.start, daemon=True
             )
-        self._observer_thread.start()
+            self._observer_thread.start()
 
     def toggle_real_time_monitoring(self, enabled: bool) -> None:
-        """Enable or disable real-time monitoring of the Player.log file."""
+        """Enable or disable real-time monitoring of the player log file."""
         if enabled:
             if not hasattr(self, "_observer"):
                 self.init_file_watcher()
             if self._observer:
-                # Start observer thread if not alive
                 if not self._observer_thread.is_alive():
+                    logger.debug("Starting observer thread for real-time monitoring.")
                     self._observer_thread = threading.Thread(
                         target=self._observer.start, daemon=True
                     )
                     self._observer_thread.start()
         else:
             if hasattr(self, "_observer") and self._observer:
+                logger.debug("Stopping observer thread for real-time monitoring.")
                 self._observer.stop()
-                # Do not join here to avoid blocking UI thread
-                # Instead, use a timer to join later or rely on app exit cleanup
 
     def load_log(self) -> None:
-        """Load the Player.log file content and update UI."""
         logger.info("Starting to load log file.")
         if not hasattr(self, "log_display") or not isinstance(
             self.log_display, QTextEdit
@@ -788,7 +797,6 @@ class PlayerLogTab(QWidget):
             self._update_file_info()
             self._update_statistics()
 
-            # Automatically reset filter to "All Entries" if current filter results in no lines
             if self.filter_combo and self.filter_combo.currentText() != "All Entries":
                 filter_type = self.filter_combo.currentText()
                 mod_filter = (
@@ -843,7 +851,6 @@ class PlayerLogTab(QWidget):
 
             self.apply_filter()
 
-            # Reapply search highlights after loading and filtering
             current_search_text = self.search_input.text() if self.search_input else ""
             if current_search_text:
                 self.search_text_changed(current_search_text)
@@ -852,7 +859,6 @@ class PlayerLogTab(QWidget):
             self.current_match_index = -1
             self._update_match_count()
 
-            # Auto scroll to end after refresh
             self.scroll_to_end()
             logger.info("Auto-scroll to end after refresh.")
 
@@ -864,13 +870,10 @@ class PlayerLogTab(QWidget):
             self._update_file_info()
 
     def refresh_log(self) -> None:
-        """Refresh the log only if a log file is already loaded."""
         if self.current_log_content:
             self.load_log()
         else:
-            # Optionally, show a message or do nothing if no log is loaded
             logger.info("No log loaded to refresh.")
-            pass
 
     def _analyze_log_content(self, content: str) -> None:
         lines = content.splitlines()
@@ -904,7 +907,6 @@ class PlayerLogTab(QWidget):
                 self.log_stats["info"] += 1
 
     def _update_file_info(self) -> None:
-        """Update file information labels."""
         if self.player_log_path and self.player_log_path.exists():
             stat = self.player_log_path.stat()
             size_mb = stat.st_size / (1024 * 1024)
@@ -920,30 +922,10 @@ class PlayerLogTab(QWidget):
             self.file_size_label.setText("Size: Unknown")
             self.last_modified_label.setText("Modified: Unknown")
 
-    def _update_statistics(self) -> None:
-        """Update statistics labels."""
-        if hasattr(self, "total_lines_label"):
-            self.total_lines_label.setText(
-                f"Total Lines: {self.log_stats['total_lines']}"
-            )
-        if hasattr(self, "errors_label"):
-            self.errors_label.setText(f"Errors: {self.log_stats['errors']}")
-        if hasattr(self, "warnings_label"):
-            self.warnings_label.setText(f"Warnings: {self.log_stats['warnings']}")
-        if hasattr(self, "exceptions_label"):
-            self.exceptions_label.setText(f"Exceptions: {self.log_stats['exceptions']}")
-        if hasattr(self, "mod_issues_label"):
-            self.mod_issues_label.setText(f"Mod Issues: {self.log_stats['mod_issues']}")
-        if hasattr(self, "keybind_label"):
-            self.keybind_label.setText(
-                f"Keybind Conflicts: {self.log_stats['keybind_conflicts']}"
-            )
-        if hasattr(self, "info_label"):
-            self.info_label.setText(f"Info: {self.log_stats['info']}")
-        if hasattr(self, "match_count_label"):
-            self.match_count_label.setText(f"Match Count: {len(self.matches)}")
+    _cached_mod_filter_text: str = ""
 
     def apply_filter(self) -> None:
+        """Apply the selected filter and mod name filter to the current log content."""
         if not self.current_log_content:
             return
 
@@ -956,9 +938,19 @@ class PlayerLogTab(QWidget):
         lines = self.current_log_content.splitlines()
         filtered_lines = []
 
-        mod_filter_re = (
-            re.compile(re.escape(mod_filter), re.IGNORECASE) if mod_filter else None
-        )
+        # Cache compiled regex for mod_filter to avoid recompilation
+        if mod_filter:
+            if (
+                not hasattr(self, "_cached_mod_filter")
+                or self._cached_mod_filter_text != mod_filter
+            ):
+                self._cached_mod_filter = re.compile(
+                    re.escape(mod_filter), re.IGNORECASE
+                )
+                self._cached_mod_filter_text = mod_filter
+            mod_filter_re = self._cached_mod_filter
+        else:
+            mod_filter_re = None
 
         for line in lines:
             include_line = False
@@ -993,18 +985,21 @@ class PlayerLogTab(QWidget):
             if include_line:
                 filtered_lines.append(line)
 
-        # Add line numbers to filtered lines
-        numbered_lines = [f"{idx + 1}: {line}" for idx, line in enumerate(filtered_lines)]
+        numbered_lines = [
+            f"{idx + 1}: {line}" for idx, line in enumerate(filtered_lines)
+        ]
 
-        self.filtered_content = "\n".join(numbered_lines)
-        self.log_display.setPlainText(self.filtered_content)
+        new_filtered_content = "\n".join(numbered_lines)
+        # Avoid unnecessary UI update if content unchanged
+        if new_filtered_content != getattr(self, "filtered_content", None):
+            self.filtered_content = new_filtered_content
+            self.log_display.setPlainText(self.filtered_content)
 
         current_search_text = self.search_input.text() if self.search_input else ""
         if current_search_text:
             self.search_text_changed(current_search_text)
 
     def export_log(self) -> None:
-        """Export the current log content to a file."""
         if not self.current_log_content:
             show_warning("No log content to export.")
             return
@@ -1039,6 +1034,16 @@ class PlayerLogTab(QWidget):
                         and self.filter_combo.currentText() != "All Entries"
                         else self.current_log_content
                     )
+                    # Fix string formatting warnings by decoding bytes if needed
+                    if isinstance(content_to_export, bytes):
+                        content_to_export = content_to_export.decode(
+                            "utf-8", errors="ignore"
+                        )
+                    # Fix string formatting warnings for bytes in f-string or format usage
+                    if isinstance(content_to_export, bytes):
+                        content_to_export = content_to_export.decode(
+                            "utf-8", errors="ignore"
+                        )
                     f.write(content_to_export)
 
                 show_information(f"Log exported successfully to:\n{file_path}")
@@ -1046,13 +1051,11 @@ class PlayerLogTab(QWidget):
                 show_warning(f"Failed to export log:\n{str(e)}")
 
     def load_default_log(self) -> None:
-        """Load the default current game log."""
         logger.info("Loading default game log.")
         self.player_log_path = self._get_player_log_path()
         self.load_log()
 
     def load_log_from_file(self) -> None:
-        """Open a file dialog to select a log file and load it."""
         logger.info("Opening file dialog to load log from file.")
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -1066,7 +1069,6 @@ class PlayerLogTab(QWidget):
             self.load_log()
 
     def load_log_from_link(self) -> None:
-        """Open a dialog to input a URL, download the log content, and display it."""
         url, ok = QInputDialog.getText(self, "Load Log from Link", "Enter log URL:")
         if ok and url:
             logger.info("Loading log from URL: {}", url)
@@ -1078,7 +1080,7 @@ class PlayerLogTab(QWidget):
                 content = response.text
 
                 self.current_log_content = content
-                self.player_log_path = None  # Clear path since loading from URL
+                self.player_log_path = None
                 self._analyze_log_content(content)
                 self._update_file_info()
                 self._update_statistics()
@@ -1093,15 +1095,30 @@ class PlayerLogTab(QWidget):
                 show_warning(f"Failed to load log from URL:\n{e}")
 
     def _apply_quick_nav_highlight(self, cursor: QTextCursor) -> None:
-        """Apply the quick navigation highlight format to the given cursor selection."""
-        # Get existing extra selections to preserve them
         existing_selections = self.log_display.extraSelections()
 
         selection = QTextEdit.ExtraSelection()
         setattr(selection, "cursor", cursor)
         setattr(selection, "format", self.quick_nav_highlight_format)
 
-        # Append the new selection to existing ones
         new_selections = existing_selections + [selection]
 
         self.log_display.setExtraSelections(new_selections)
+
+    def _update_statistics(self) -> None:
+        """Update the statistics labels with the current log statistics."""
+        self.total_lines_label.setText(
+            f"Total Lines: {self.log_stats.get('total_lines', 0)}"
+        )
+        self.errors_label.setText(f"Errors: {self.log_stats.get('errors', 0)}")
+        self.warnings_label.setText(f"Warnings: {self.log_stats.get('warnings', 0)}")
+        self.exceptions_label.setText(
+            f"Exceptions: {self.log_stats.get('exceptions', 0)}"
+        )
+        self.mod_issues_label.setText(
+            f"Mod Issues: {self.log_stats.get('mod_issues', 0)}"
+        )
+        self.keybind_label.setText(
+            f"Keybind Conflicts: {self.log_stats.get('keybind_conflicts', 0)}"
+        )
+        self.info_label.setText(f"Info: {self.log_stats.get('info', 0)}")
