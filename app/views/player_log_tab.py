@@ -542,6 +542,7 @@ class PlayerLogTab(QWidget):
         """Handle file changed signal to read appended content or reload if truncated."""
         try:
             if self.player_log_path is None:
+                logger.debug("Player log path is None in on_file_changed.")
                 return
             current_size = self.player_log_path.stat().st_size
             logger.debug(
@@ -556,15 +557,8 @@ class PlayerLogTab(QWidget):
                     logger.debug(
                         "File size smaller than last log size, treating as reset."
                     )
-                    self.current_log_content = content
-                    self.last_log_size = current_size
-                    if (
-                        self.filter_combo
-                        and self.filter_combo.currentText() != "All Entries"
-                    ):
-                        self.filter_combo.setCurrentText("All Entries")
-                    self.filtered_content = ""
-                    self.log_display.clear()
+                    self.load_log()
+                    return
                 else:
                     lines = content.splitlines()
                     reset_index = -1
@@ -578,15 +572,8 @@ class PlayerLogTab(QWidget):
                         logger.debug(
                             f"Log reset signature detected at line {reset_index}. Resetting log content."
                         )
-                        self.current_log_content = "\n".join(lines[reset_index:])
-                        self.last_log_size = len(self.current_log_content)
-                        if (
-                            self.filter_combo
-                            and self.filter_combo.currentText() != "All Entries"
-                        ):
-                            self.filter_combo.setCurrentText("All Entries")
-                        self.filtered_content = ""
-                        self.log_display.clear()
+                        self.load_log()
+                        return
                     new_content = ""
                     if current_size > self.last_log_size:
                         new_content = content[self.last_log_size :]
@@ -597,7 +584,11 @@ class PlayerLogTab(QWidget):
                         if isinstance(new_content, bytes):
                             new_content = new_content.decode("utf-8", errors="ignore")
                     if new_content.startswith("Mono path"):
-                        self.current_log_content = new_content
+                        logger.debug(
+                            "New content starts with 'Mono path', reloading log."
+                        )
+                        self.load_log()
+                        return
                     else:
                         self.current_log_content += new_content
                     self.last_log_size = current_size
@@ -790,7 +781,8 @@ class PlayerLogTab(QWidget):
                     logger.info("Log file is growing.")
                 else:
                     self.growth_label.setText("")
-            self.last_log_size = new_size
+            # Set last_log_size to file size in bytes for consistency
+            self.last_log_size = self.player_log_path.stat().st_size
 
             self.current_log_content = content
             self._analyze_log_content(content)
