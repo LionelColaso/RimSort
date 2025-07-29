@@ -89,5 +89,6 @@ KNOWN_TIER_ONE_MODS = {
     "ludeon.rimworld.biotech",
     "ludeon.rimworld.anomaly",
     "ludeon.rimworld.odyssey",
+    "oskarpotocki.vanillafactionsexpanded.core",
     "unlimitedhugs.hugslib",
 }
