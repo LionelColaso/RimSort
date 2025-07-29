@@ -90,5 +90,6 @@ KNOWN_TIER_ONE_MODS = {
     "ludeon.rimworld.anomaly",
     "ludeon.rimworld.odyssey",
     "oskarpotocki.vanillafactionsexpanded.core",
+    "imranfish.xmlextensions",
     "unlimitedhugs.hugslib",
 }
