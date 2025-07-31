@@ -138,6 +138,8 @@ class Settings(QObject):
         self.render_unity_rich_text: bool = True
         self.update_databases_on_startup: bool = True
 
+        self.auto_load_player_log_on_startup: bool = False
+
         self.rentry_auth_code: str = ""
 
         self.github_username: str = ""
