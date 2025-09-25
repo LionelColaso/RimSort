@@ -1192,6 +1192,14 @@ The resultant database, C, is saved to a user-specified path. You will be prompt
         <source>ACf file does not exist. It will be created when you download mods using steamcmd.</source>
         <translation type="unfinished"></translation>
     </message>
+    <message>
+        <source>Failed to open file.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Failed to open the file with default text editor. It may not exist.</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>MainContentController</name>
@@ -2040,10 +2048,6 @@ How would you like to proceed?</source>
     </message>
     <message>
         <source>To Rentry.co…</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>Upload Log</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

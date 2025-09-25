@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version='1.0' encoding='UTF-8'?>
 <!DOCTYPE TS>
 <TS version="2.1" language="zh_CN">
 <context>
@@ -1245,6 +1245,14 @@ Are your game configuration paths correct?</source>
         <source>ACf file does not exist. It will be created when you download mods using steamcmd.</source>
         <translation>ACF文件不存在。当您使用SteamCMD下载mod时，它将创建。</translation>
     </message>
+    <message>
+        <source>Failed to open file.</source>
+        <translation>无法打开文件。</translation>
+    </message>
+    <message>
+        <source>Failed to open the file with default text editor. It may not exist.</source>
+        <translation>无法使用默认文本编辑器打开文件。它可能不存在。</translation>
+    </message>
 </context>
 <context>
     <name>MainContentController</name>
@@ -2103,10 +2111,6 @@ RimSort 可以复制所有你的创意工坊模组到新实例的本地模组文
     <message>
         <source>To Rentry.co…</source>
         <translation>导出到 Rentry.co</translation>
-    </message>
-    <message>
-        <source>Upload Log</source>
-        <translation>上传日志</translation>
     </message>
     <message>
         <source>RimSort</source>

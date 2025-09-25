@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version='1.0' encoding='UTF-8'?>
 <!DOCTYPE TS>
 <TS version="2.1" language="pt_BR">
 <context>
@@ -1245,6 +1245,14 @@ O banco de dados resultante, C, será salvo em um caminho definido pelo usuário
         <source>ACf file does not exist. It will be created when you download mods using steamcmd.</source>
         <translation>O arquivo ACF não existe.Ele será criado quando você baixar mods usando SteamCMD.</translation>
     </message>
+    <message>
+        <source>Failed to open file.</source>
+        <translation>Falha ao abrir o arquivo.</translation>
+    </message>
+    <message>
+        <source>Failed to open the file with default text editor. It may not exist.</source>
+        <translation>Falha ao abrir o arquivo com o editor de texto padrão.Pode não existir.</translation>
+    </message>
 </context>
 <context>
     <name>MainContentController</name>
@@ -2119,10 +2127,6 @@ Como você gostaria de prosseguir?</translation>
     <message>
         <source>To Rentry.co…</source>
         <translation>Para Rentry.co...</translation>
-    </message>
-    <message>
-        <source>Upload Log</source>
-        <translation>Enviar Log</translation>
     </message>
     <message>
         <source>Open...</source>

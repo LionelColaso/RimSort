@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version='1.0' encoding='UTF-8'?>
 <!DOCTYPE TS>
 <TS version="2.1" language="es_ES">
 <context>
@@ -1232,6 +1232,14 @@ La base de datos resultante, C, se guarda en una ruta especificada por el usuari
         <source>ACf file does not exist. It will be created when you download mods using steamcmd.</source>
         <translation>El archivo ACF no existe. Se creará cuando descargue mods usando SteamCMD.</translation>
     </message>
+    <message>
+        <source>Failed to open file.</source>
+        <translation>No se pudo abrir el archivo.</translation>
+    </message>
+    <message>
+        <source>Failed to open the file with default text editor. It may not exist.</source>
+        <translation>No se pudo abrir el archivo con el editor de texto predeterminado.Puede que no existirá.</translation>
+    </message>
 </context>
 <context>
     <name>MainContentController</name>
@@ -2104,10 +2112,6 @@ Alternativamente, puedes mantener tu antigua preferencia de carpeta del taller d
     <message>
         <source>To Rentry.co…</source>
         <translation>Aportar a Rentry.co…</translation>
-    </message>
-    <message>
-        <source>Upload Log</source>
-        <translation>Subir registro</translation>
     </message>
     <message>
         <source>Open...</source>

@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version='1.0' encoding='UTF-8'?>
 <!DOCTYPE TS>
 <TS version="2.1" language="fr_FR">
 <context>
@@ -1241,6 +1241,14 @@ La base de données résultante, C, est enregistrée sur un chemin spécifié pa
         <source>ACf file does not exist. It will be created when you download mods using steamcmd.</source>
         <translation>Le fichier ACF n'existe pas. Il sera créé lorsque vous téléchargez des mods à l'aide de SteamCMD.</translation>
     </message>
+    <message>
+        <source>Failed to open file.</source>
+        <translation>Impossible d'ouvrir le fichier.</translation>
+    </message>
+    <message>
+        <source>Failed to open the file with default text editor. It may not exist.</source>
+        <translation>Impossible d'ouvrir le fichier avec l'éditeur de texte par défaut.Il peut ne pas exister.</translation>
+    </message>
 </context>
 <context>
     <name>MainContentController</name>
@@ -2113,10 +2121,6 @@ Comment aimeriez-vous procéder? {existing_instance_workshop_folder}</translatio
     <message>
         <source>To Rentry.co…</source>
         <translation>Vers Rentry.co…</translation>
-    </message>
-    <message>
-        <source>Upload Log</source>
-        <translation>Télécharger le journal</translation>
     </message>
     <message>
         <source>Open...</source>

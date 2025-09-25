@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version='1.0' encoding='UTF-8'?>
 <!DOCTYPE TS>
 <TS version="2.1" language="ru_RU">
 <context>
@@ -1245,6 +1245,14 @@ The resultant database, C, is saved to a user-specified path. You will be prompt
         <source>ACf file does not exist. It will be created when you download mods using steamcmd.</source>
         <translation>Файл ACF не существует.Он будет создан при загрузке модов с помощью SteamCmd.</translation>
     </message>
+    <message>
+        <source>Failed to open file.</source>
+        <translation>Не удалось открыть файл.</translation>
+    </message>
+    <message>
+        <source>Failed to open the file with default text editor. It may not exist.</source>
+        <translation>Не удалось открыть файл с помощью текстового редактора по умолчанию.Это может не существовать.</translation>
+    </message>
 </context>
 <context>
     <name>MainContentController</name>
@@ -2119,10 +2127,6 @@ RimSort может скопировать все ваши моды Workshop в �
     <message>
         <source>To Rentry.co…</source>
         <translation>В Rentry.co…</translation>
-    </message>
-    <message>
-        <source>Upload Log</source>
-        <translation>Загрузить журнал</translation>
     </message>
     <message>
         <source>Open...</source>

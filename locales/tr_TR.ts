@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version='1.0' encoding='UTF-8'?>
 <!DOCTYPE TS>
 <TS version="2.1" language="tr_TR">
 <context>
@@ -1246,6 +1246,14 @@ Ortaya çıkan veritabanı, C, kullanıcı tarafından belirlenen bir yola kayde
         <source>ACf file does not exist. It will be created when you download mods using steamcmd.</source>
         <translation>ACF dosyası yok. Steamcmd kullanarak modları indirdiğinizde oluşturulacaktır.</translation>
     </message>
+    <message>
+        <source>Failed to open file.</source>
+        <translation>Dosyayı açılamadı.</translation>
+    </message>
+    <message>
+        <source>Failed to open the file with default text editor. It may not exist.</source>
+        <translation>Dosyayı varsayılan metin düzenleyicisiyle açılamadı.Var olmayabilir.</translation>
+    </message>
 </context>
 <context>
     <name>MainContentController</name>
@@ -2118,10 +2126,6 @@ Nasıl devam etmek istersiniz? {existing_instance_workshop_folder}</translation>
     <message>
         <source>To Rentry.co…</source>
         <translation>Rentry.co'ya</translation>
-    </message>
-    <message>
-        <source>Upload Log</source>
-        <translation>Log yükle</translation>
     </message>
     <message>
         <source>Open...</source>

@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version='1.0' encoding='UTF-8'?>
 <!DOCTYPE TS>
 <TS version="2.1" language="de_DE">
 <context>
@@ -1241,6 +1241,14 @@ Die resultierende Datenbank C wird in einem benutzerdefinierten Pfad gespeichert
         <source>ACf file does not exist. It will be created when you download mods using steamcmd.</source>
         <translation>ACF -Datei existiert nicht.Es wird erstellt, wenn Sie Mods mit SteamCMD herunterladen.</translation>
     </message>
+    <message>
+        <source>Failed to open file.</source>
+        <translation>Datei nicht öffnen.</translation>
+    </message>
+    <message>
+        <source>Failed to open the file with default text editor. It may not exist.</source>
+        <translation>Die Datei nicht mit Standardtexteditor geöffnet.Es kann nicht existieren.</translation>
+    </message>
 </context>
 <context>
     <name>MainContentController</name>
@@ -2113,10 +2121,6 @@ Wie möchten Sie fortfahren? {existing_instance_workshop_folder}</translation>
     <message>
         <source>To Rentry.co…</source>
         <translation>Zu rentry.co…</translation>
-    </message>
-    <message>
-        <source>Upload Log</source>
-        <translation>Protokoll hochladen</translation>
     </message>
     <message>
         <source>Open...</source>
