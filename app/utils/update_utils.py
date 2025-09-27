@@ -2,6 +2,7 @@ import os
 import platform
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import traceback
@@ -10,16 +11,17 @@ from functools import partial
 from io import BytesIO
 from pathlib import Path
 from tempfile import gettempdir
-from typing import TYPE_CHECKING, Any, Dict, List, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, cast
 
 if TYPE_CHECKING:
     from app.utils.metadata import SettingsController
-from zipfile import BadZipFile, ZipFile
+
+from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 import requests
 from loguru import logger
 from packaging import version
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QMessageBox
 
 import app.views.dialogue as dialogue
@@ -28,7 +30,99 @@ from app.utils.event_bus import EventBus
 from app.utils.generic import check_internet_connection
 
 
+class UpdateError(Exception):
+    """Base exception for update-related errors."""
+
+    pass
+
+
+class UpdateDownloadError(UpdateError):
+    """Raised when download fails."""
+
+    pass
+
+
+class UpdateExtractionError(UpdateError):
+    """Raised when extraction fails."""
+
+    pass
+
+
+class UpdateScriptLaunchError(UpdateError):
+    """Raised when launching update script fails."""
+
+    pass
+
+
+class ScriptConfig:
+    """Configuration for platform-specific update scripts."""
+
+    def __init__(
+        self,
+        script_path_func: Callable[[], Path],
+        start_new_session: Optional[bool],
+        elevated_args_func: Callable[..., str],
+        normal_args_func: Callable[..., str],
+    ) -> None:
+        self.script_path_func = script_path_func
+        self.start_new_session = start_new_session
+        self.elevated_args_func = elevated_args_func
+        self.normal_args_func = normal_args_func
+
+    def get_script_path(self) -> Path:
+        """Get the script path for this platform."""
+        return self.script_path_func()
+
+    def get_args(
+        self,
+        script_path: Path,
+        temp_path: Optional[Path] = None,
+        log_path: Optional[Path] = None,
+        needs_elevation: bool = False,
+    ) -> str:
+        """Get the appropriate arguments string based on elevation needs."""
+        if needs_elevation:
+            if (
+                temp_path is not None
+                and log_path is not None
+                and "temp_path" in self.elevated_args_func.__code__.co_varnames
+                and "log_path" in self.elevated_args_func.__code__.co_varnames
+            ):
+                return self.elevated_args_func(script_path, temp_path, log_path)
+            elif (
+                temp_path is not None
+                and "temp_path" in self.elevated_args_func.__code__.co_varnames
+            ):
+                return self.elevated_args_func(script_path, temp_path)
+            return self.elevated_args_func(script_path)
+        else:
+            if (
+                temp_path is not None
+                and log_path is not None
+                and "temp_path" in self.normal_args_func.__code__.co_varnames
+                and "log_path" in self.normal_args_func.__code__.co_varnames
+            ):
+                return self.normal_args_func(script_path, temp_path, log_path)
+            elif (
+                temp_path is not None
+                and "temp_path" in self.normal_args_func.__code__.co_varnames
+            ):
+                return self.normal_args_func(script_path, temp_path)
+            return self.normal_args_func(script_path)
+
+
 class UpdateManager(QObject):
+    update_progress = Signal(int, str)  # percent, message
+
+    # Class-level constants
+    GITHUB_API_URL = "https://api.github.com/repos/LionelColaso/RimSort/releases/latest"
+    API_TIMEOUT = 15
+    DOWNLOAD_TIMEOUT = 30
+    ZIP_EXTENSION = ".zip"
+    UPDATER_LOG_FILENAME = "updater.log"
+    TEMP_DIR_DARWIN = "RimSort.app"
+    TEMP_DIR_DEFAULT = "RimSort"
+
     # Class-level cached platform patterns for performance
     _platform_patterns = {
         "Darwin": {
@@ -54,12 +148,61 @@ class UpdateManager(QObject):
         },
     }
 
+    # Platform-specific script configurations
+    _script_configs: Dict[str, ScriptConfig] = {
+        "Darwin": ScriptConfig(
+            script_path_func=lambda: Path(sys.argv[0]).parent.parent.parent
+            / "Contents"
+            / "MacOS"
+            / "update.sh",
+            start_new_session=False,
+            elevated_args_func=lambda script_path,
+            temp_path,
+            log_path: f'osascript -e \'tell app "Terminal" to do script "sudo /bin/bash {shlex.quote(str(script_path))} {shlex.quote(str(temp_path))} {shlex.quote(str(log_path))}; read -p \\\\\\"Press enter to close\\\\\\"\'"',
+            normal_args_func=lambda script_path,
+            temp_path,
+            log_path: f'osascript -e \'tell app "Terminal" to do script "/bin/bash {shlex.quote(str(script_path))} {shlex.quote(str(temp_path))} {shlex.quote(str(log_path))}; read -p \\\\\\"Press enter to close\\\\\\"\'"',
+        ),
+        "Windows": ScriptConfig(
+            script_path_func=lambda: AppInfo().application_folder / "update.bat",
+            start_new_session=None,  # Not used on Windows
+            elevated_args_func=lambda script_path,
+            temp_path,
+            log_path: "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"Start-Process cmd -ArgumentList @('/k', '"
+            + f'cd /d \\"{script_path.parent}\\" && \\"{script_path}\\" \\"{temp_path}\\" \\"{log_path}\\"'
+            + "') -Verb RunAs -WindowStyle Normal\"",
+            normal_args_func=lambda script_path,
+            temp_path,
+            log_path: f'cmd /k "{script_path}" "{temp_path}" "{log_path}"',
+        ),
+        "Linux": ScriptConfig(
+            script_path_func=lambda: AppInfo().application_folder / "update.sh",
+            start_new_session=True,
+            elevated_args_func=lambda script_path,
+            temp_path,
+            log_path: f'x-terminal-emulator -e "sudo {shlex.quote(str(script_path))} {shlex.quote(str(temp_path))} {shlex.quote(str(log_path))}"',
+            normal_args_func=lambda script_path,
+            temp_path,
+            log_path: f'x-terminal-emulator -e bash -c "{shlex.quote(str(script_path))} {shlex.quote(str(temp_path))} {shlex.quote(str(log_path))}; read -p \\\\\\"Press enter to close\\\\\\"\'"',
+        ),
+    }
+
     def __init__(
         self, settings_controller: "SettingsController", main_content: Any
     ) -> None:
         super().__init__()
         self.settings_controller = settings_controller
         self.main_content = main_content
+        self._update_content: bytes | None = None
+        # Cache platform info to avoid repeated calls
+        self._system = platform.system()
+        self._arch = platform.architecture()[0]
+        # Cache platform patterns for performance
+        self._cached_patterns = (
+            self._platform_patterns[self._system]
+            if self._system in self._platform_patterns
+            else None
+        )
 
     def do_check_for_update(self) -> None:
         """
@@ -101,8 +244,10 @@ class UpdateManager(QObject):
         logger.debug(f"Current RimSort version: {current_version}")
 
         # Get the latest release info and download URL
+        logger.info("Fetching latest release information from GitHub API...")
         latest_release_info = self._get_latest_release_info()
         if not latest_release_info:
+            logger.warning("Failed to retrieve latest release information")
             return
 
         latest_version = latest_release_info["version"]
@@ -110,6 +255,7 @@ class UpdateManager(QObject):
         download_url = latest_release_info["download_url"]
 
         logger.debug(f"Latest RimSort version: {latest_version}")
+        logger.info(f"Update available: {latest_tag_name} ({latest_version})")
 
         # Compare versions
         try:
@@ -149,10 +295,7 @@ class UpdateManager(QObject):
         """
         try:
             # Use releases API for better asset information
-            releases_url = (
-                "https://api.github.com/repos/RimSort/RimSort/releases/latest"
-            )
-            response = requests.get(releases_url, timeout=15)
+            response = requests.get(self.GITHUB_API_URL, timeout=self.API_TIMEOUT)
             response.raise_for_status()
             release_data = response.json()
 
@@ -204,7 +347,7 @@ class UpdateManager(QObject):
 
     def _asset_matches(
         self,
-        asset: dict[str, Any],
+        asset: Dict[str, Any],
         patterns: List[str],
         extension: str,
         require_arch: bool = False,
@@ -228,23 +371,21 @@ class UpdateManager(QObject):
             asset_name = " ".join(asset_name)
         asset_name_lower = asset_name.lower()
 
+        # Early return if extension doesn't match
         if not asset_name_lower.endswith(extension):
             return False
 
-        system_match = any(pattern.lower() in asset_name_lower for pattern in patterns)
-
-        if not system_match:
+        # Check system patterns
+        if not any(pattern.lower() in asset_name_lower for pattern in patterns):
             return False
 
+        # If architecture is required, check arch patterns
         if require_arch and arch_patterns:
-            arch_match = any(
-                pattern.lower() in asset_name_lower for pattern in arch_patterns
-            )
-            return arch_match
+            return any(pattern.lower() in asset_name_lower for pattern in arch_patterns)
 
         return True
 
-    def _get_platform_download_url(self, assets: list[dict[str, Any]]) -> str | None:
+    def _get_platform_download_url(self, assets: List[Dict[str, Any]]) -> str | None:
         """
         Get the appropriate download URL for the current platform.
 
@@ -254,56 +395,89 @@ class UpdateManager(QObject):
         Returns:
             Download URL string or None if not found
         """
-        system = platform.system()
-        arch = platform.architecture()[0]
-
-        if system not in self._platform_patterns:
-            logger.warning(f"Unsupported system: {system}")
+        if self._cached_patterns is None:
+            logger.warning(f"Unsupported system: {self._system}")
             return None
 
-        platform_info = self._platform_patterns[system]
-        system_patterns = cast(List[str], platform_info["patterns"])
-        arch_patterns_dict = cast(Dict[str, List[str]], platform_info["arch_patterns"])
-        arch_patterns = arch_patterns_dict.get(arch, [])
-        extension = ".zip"
+        system_patterns = cast(List[str], self._cached_patterns["patterns"])
+        arch_patterns_dict = cast(
+            Dict[str, List[str]], self._cached_patterns["arch_patterns"]
+        )
+        arch_patterns = arch_patterns_dict.get(self._arch, [])
 
         logger.debug(
-            f"Looking for asset matching system={system}, arch={arch}, patterns={system_patterns + arch_patterns}"
+            f"Looking for asset matching system={self._system}, arch={self._arch}, patterns={system_patterns + arch_patterns}"
         )
 
-        # Single loop: prefer arch match, fallback to system match
+        # Find best matching asset
+        candidate = self._find_best_asset_match(assets, system_patterns, arch_patterns)
+        if candidate:
+            return candidate["url"]
+
+        logger.warning(f"No matching asset found for {self._system} {self._arch}")
+        return None
+
+    def _find_best_asset_match(
+        self,
+        assets: List[Dict[str, Any]],
+        system_patterns: List[str],
+        arch_patterns: List[str],
+    ) -> Dict[str, str] | None:
+        """
+        Find the best matching asset from the list.
+
+        Args:
+            assets: List of asset dictionaries
+            system_patterns: System name patterns to match
+            arch_patterns: Architecture patterns to match
+
+        Returns:
+            Dictionary with 'url' and 'name' keys, or None if no match
+        """
+        extension = self.ZIP_EXTENSION
+        candidate = None
+
+        # Single pass: prefer arch-specific match, fallback to system-only
         for asset in assets:
-            if arch_patterns:
-                if self._asset_matches(
+            asset_name = str(asset.get("name", ""))
+            download_url = asset.get("browser_download_url")
+
+            if (
+                download_url
+                and arch_patterns
+                and self._asset_matches(
                     asset,
                     system_patterns,
                     extension,
                     require_arch=True,
                     arch_patterns=arch_patterns,
-                ):
-                    download_url = asset.get("browser_download_url")
-                    logger.debug(
-                        f"Found matching asset: {asset.get('name')} -> {download_url}"
-                    )
-                    return download_url
-            else:
-                # No arch patterns, direct system match
-                if self._asset_matches(asset, system_patterns, extension):
-                    download_url = asset.get("browser_download_url")
-                    logger.debug(
-                        f"Found matching asset: {asset.get('name')} -> {download_url}"
-                    )
-                    return download_url
-
-            # Fallback to system-only match if arch failed or not required
-            if self._asset_matches(asset, system_patterns, extension):
-                download_url = asset.get("browser_download_url")
-                logger.debug(
-                    f"Found fallback asset: {asset.get('name')} -> {download_url}"
                 )
-                return download_url
+            ):
+                logger.debug(
+                    f"Found arch-specific matching asset: {asset_name} -> {download_url}"
+                )
+                return {"url": str(download_url), "name": asset_name}
+            elif download_url and self._asset_matches(
+                asset, system_patterns, extension, require_arch=False
+            ):
+                logger.debug(
+                    f"Found system-only matching asset: {asset_name} -> {download_url}"
+                )
+                if candidate is None:  # Only set if no arch-specific found
+                    candidate = {"url": str(download_url), "name": asset_name}
 
-        logger.warning(f"No matching asset found for {system} {arch}")
+        if candidate:
+            # Strict verification: ensure asset name contains system pattern
+            asset_name_lower = candidate["name"].lower()
+            if not any(
+                pattern.lower() in asset_name_lower for pattern in system_patterns
+            ):
+                logger.warning(
+                    f"Candidate asset '{candidate['name']}' does not contain system patterns {system_patterns}; rejecting"
+                )
+                return None
+            return candidate
+
         return None
 
     def _perform_update(self, download_url: str, tag_name: str) -> None:
@@ -323,7 +497,7 @@ class UpdateManager(QObject):
             EventBus().do_threaded_loading_animation.emit(
                 str(AppInfo().theme_data_folder / "default-icons" / "refresh.gif"),
                 partial(
-                    self._download_and_extract_update,
+                    self._download_update,
                     url=download_url,
                 ),
                 self.tr("Downloading RimSort {tag_name} release...").format(
@@ -331,10 +505,20 @@ class UpdateManager(QObject):
                 ),
             )
 
+            # Extract with progress animation
+            EventBus().do_threaded_loading_animation.emit(
+                str(AppInfo().theme_data_folder / "default-icons" / "refresh.gif"),
+                partial(self._extract_update),
+                self.tr("Extracting update files..."),
+            )
+
             # Get temp directory path
-            system = platform.system()
-            temp_dir = "RimSort.app" if system == "Darwin" else "RimSort"
-            temp_path = os.path.join(gettempdir(), temp_dir)
+            temp_dir = (
+                self.TEMP_DIR_DARWIN
+                if self._system == "Darwin"
+                else self.TEMP_DIR_DEFAULT
+            )
+            temp_path = Path(gettempdir()) / temp_dir
 
             # Confirm installation
             answer = dialogue.show_dialogue_conditional(
@@ -346,109 +530,363 @@ class UpdateManager(QObject):
             if answer != QMessageBox.StandardButton.Yes:
                 return
 
+            # Ask user if they want to create a backup
+            backup_answer = dialogue.show_dialogue_conditional(
+                title=self.tr("Create Backup?"),
+                text=self.tr("Would you like to create a backup before updating?"),
+                information=self.tr(
+                    "Creating a backup is recommended to preserve your current installation."
+                ),
+            )
+
+            if backup_answer == QMessageBox.StandardButton.Yes:
+                # Create backup of current installation with progress animation
+                EventBus().do_threaded_loading_animation.emit(
+                    str(AppInfo().theme_data_folder / "default-icons" / "refresh.gif"),
+                    partial(self._create_backup),
+                    self.tr("Creating backup..."),
+                )
+
             # Launch update script
             self._launch_update_script()
 
-        except Exception as e:
-            logger.error(f"Update process failed: {e}")
+        except UpdateDownloadError as e:
+            logger.error(f"Update download failed: {e}")
             dialogue.show_warning(
-                title=self.tr("Failed to download update"),
-                text=self.tr("Failed to download latest RimSort release!"),
+                title=self.tr("Download failed"),
+                text=self.tr("Failed to download the update."),
+                information=f"Error: {str(e)}\nURL: {download_url}",
+            )
+        except UpdateExtractionError as e:
+            logger.error(f"Update extraction failed: {e}")
+            dialogue.show_warning(
+                title=self.tr("Extraction failed"),
+                text=self.tr("Failed to extract the downloaded update."),
+                information=f"Error: {str(e)}",
+            )
+        except UpdateScriptLaunchError as e:
+            logger.error(f"Update script launch failed: {e}")
+            dialogue.show_warning(
+                title=self.tr("Launch failed"),
+                text=self.tr("Failed to launch the update script."),
+                information=f"Error: {str(e)}",
+            )
+        except Exception as e:
+            logger.error(f"Unexpected update process failure: {e}")
+            dialogue.show_warning(
+                title=self.tr("Update failed"),
+                text=self.tr("An unexpected error occurred during the update process."),
                 information=f"Error: {str(e)}\nURL: {download_url}",
                 details=traceback.format_exc(),
             )
 
-    def _download_and_extract_update(self, url: str) -> None:
+    def _download_update(self, url: str) -> None:
         """
-        Download and extract the update to temporary directory.
+        Download the update to memory using requests with progress tracking.
 
         Args:
             url: URL to download from
+
+        Raises:
+            UpdateDownloadError: If download fails
         """
         try:
-            # Download with better error handling and progress
-            response = requests.get(url, timeout=30, stream=True)
+            logger.debug(f"Downloading update from {url}")
+
+            # Get file size first for progress tracking
+            head_response = requests.head(url, timeout=self.API_TIMEOUT)
+            total_size = int(head_response.headers.get("content-length", 0))
+
+            response = requests.get(url, timeout=self.DOWNLOAD_TIMEOUT, stream=True)
             response.raise_for_status()
 
-            # Extract to temp directory
-            with ZipFile(BytesIO(response.content)) as zipobj:
-                zipobj.extractall(gettempdir())
+            # Download with chunked reading for memory efficiency
+            content = bytearray()
+            downloaded_size = 0
+
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    content.extend(chunk)
+                    downloaded_size += len(chunk)
+
+                    # Log progress for large downloads and emit signal
+                    if (
+                        total_size > 0 and downloaded_size % (1024 * 1024) == 0
+                    ):  # Every MB
+                        progress = (downloaded_size / total_size) * 100
+                        logger.debug(
+                            f"Download progress: {progress:.1f}% ({downloaded_size}/{total_size} bytes)"
+                        )
+                        self.update_progress.emit(
+                            int(progress),
+                            f"Downloading... {progress:.1f}% ({downloaded_size}/{total_size} bytes)",
+                        )
+
+            self._update_content = bytes(content)
+            logger.debug(f"Downloaded {len(self._update_content)} bytes")
+
+            # Basic validation: check if content is not empty and reasonable size
+            assert self._update_content is not None
+            if len(self._update_content) == 0:
+                raise UpdateDownloadError("Downloaded file is empty")
+            if (
+                len(self._update_content) < 1024
+            ):  # Minimum reasonable size for an app update
+                raise UpdateDownloadError(
+                    f"Downloaded file too small ({len(self._update_content)} bytes)"
+                )
+
+            logger.debug("Update downloaded successfully")
 
         except requests.RequestException as e:
-            raise Exception(f"Failed to download update: {e}")
-        except BadZipFile as e:
-            raise Exception(f"Downloaded file is not a valid ZIP archive: {e}")
+            raise UpdateDownloadError(f"Failed to download update: {e}") from e
+        except UpdateError:
+            raise
         except Exception as e:
-            raise Exception(f"Failed to extract update: {e}")
+            raise UpdateDownloadError(f"Failed to download update: {e}") from e
+
+    def _extract_update(self) -> None:
+        """
+        Extract the downloaded update to a dedicated temporary directory and normalize structure.
+
+        Raises:
+            UpdateExtractionError: If extraction or normalization fails
+        """
+        try:
+            if self._update_content is None:
+                raise UpdateExtractionError(
+                    "No update content available for extraction"
+                )
+
+            # Create unique temp dir for this extraction
+            temp_base = (
+                Path(gettempdir())
+                / f"RimSort_update_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            )
+            temp_base.mkdir(exist_ok=True)
+            logger.debug(f"Using extraction temp dir: {temp_base}")
+
+            logger.debug("Extracting update to temporary directory")
+            with ZipFile(BytesIO(self._update_content)) as zipobj:
+                # Test ZIP integrity before extracting
+                corruption_info = zipobj.testzip()
+                if corruption_info is not None:
+                    raise UpdateExtractionError(
+                        f"ZIP file is corrupted at: {corruption_info}"
+                    )
+
+                zipobj.extractall(temp_base)
+                extracted_files = len(zipobj.namelist())
+                logger.info(
+                    f"Extracted {extracted_files} files from ZIP to {temp_base}"
+                )
+
+            # Normalize structure: move contents to expected root if wrapped in a folder
+            self._normalize_extracted_structure(temp_base, extracted_files)
+
+            # Set the final temp path for scripts
+            final_temp_dir = (
+                self.TEMP_DIR_DARWIN
+                if self._system == "Darwin"
+                else self.TEMP_DIR_DEFAULT
+            )
+            final_temp_path = Path(gettempdir()) / final_temp_dir
+
+            # Clean up any existing final dir and move normalized contents
+            if final_temp_path.exists():
+                shutil.rmtree(final_temp_path)
+            shutil.move(temp_base, final_temp_path)
+            logger.debug(f"Normalized update ready at: {final_temp_path}")
+
+            logger.debug("Update extracted and normalized successfully")
+
+        except BadZipFile as e:
+            raise UpdateExtractionError(
+                f"Downloaded file is not a valid ZIP archive: {e}"
+            ) from e
+        except UpdateError:
+            raise
+        except Exception as e:
+            raise UpdateExtractionError(f"Failed to extract update: {e}") from e
+
+    def _normalize_extracted_structure(
+        self, extract_path: Path, num_files: int
+    ) -> None:
+        """
+        Normalize the extracted ZIP structure by moving contents to root if wrapped.
+
+        Args:
+            extract_path: Path to the extracted contents
+            num_files: Number of files extracted (for validation)
+
+        Raises:
+            UpdateExtractionError: If normalization fails
+        """
+        if not extract_path.exists():
+            raise UpdateExtractionError(
+                "Extracted path does not exist after extraction"
+            )
+
+        children = list(extract_path.iterdir())
+        if len(children) == 0:
+            raise UpdateExtractionError("No files extracted from ZIP")
+
+        # Check for common ZIP wrapping patterns
+        if len(children) == 1 and children[0].is_dir():
+            top_dir = children[0]
+            top_dir_name = top_dir.name.lower()
+
+            # Only unwrap if it looks like a wrapper directory (not the actual app structure)
+            should_unwrap = (
+                # Common wrapper patterns
+                any(
+                    keyword in top_dir_name
+                    for keyword in ["rimsort", "app", "application", "release"]
+                )
+                or
+                # Version-like directory names
+                re.match(r"v?\d+[\.\-_]\d+", top_dir_name)
+                or
+                # If the directory name doesn't match our expected executable/bundle name
+                (self._system == "Darwin" and top_dir_name != "rimsort.app")
+                or (self._system != "Darwin" and top_dir_name != "rimsort")
+            )
+
+            if should_unwrap:
+                logger.debug(
+                    f"Detected wrapped structure in '{top_dir.name}'; normalizing"
+                )
+
+                # Move all contents from top_dir to extract_path
+                for item in top_dir.iterdir():
+                    dest = extract_path / item.name
+                    if dest.exists():
+                        if dest.is_dir():
+                            shutil.rmtree(dest)
+                        else:
+                            dest.unlink()
+                    try:
+                        shutil.move(str(item), str(extract_path))
+                    except OSError as e:
+                        logger.warning(f"Failed to move {item} to {extract_path}: {e}")
+                        # Try copy and delete as fallback
+                        if item.is_dir():
+                            shutil.copytree(str(item), str(dest))
+                            shutil.rmtree(item)
+                        else:
+                            shutil.copy2(str(item), str(dest))
+                            item.unlink()
+
+                # Remove empty top_dir
+                top_dir.rmdir()
+                logger.debug("Structure normalized: contents moved to root")
+                # Refresh children list after unwrapping
+                children = list(extract_path.iterdir())
+
+        # Validate expected structure based on platform
+        expected_executable = "RimSort.exe" if self._system == "Windows" else "RimSort"
+        executable_found = False
+
+        if self._system == "Darwin":
+            # Look for .app bundle
+            for child in children:
+                if child.is_dir() and child.name.endswith(".app"):
+                    app_bundle = child
+                    executable_path = (
+                        app_bundle / "Contents" / "MacOS" / expected_executable
+                    )
+                    if executable_path.exists():
+                        executable_found = True
+                        logger.debug(f"Verified macOS executable at: {executable_path}")
+                        break
+            if not executable_found:
+                raise UpdateExtractionError(
+                    "Expected RimSort.app bundle with executable not found after normalization"
+                )
+        else:
+            # Look for executable directly
+            executable_path = extract_path / expected_executable
+            if executable_path.exists():
+                executable_found = True
+                logger.debug(f"Verified executable at: {executable_path}")
+            else:
+                # Fallback: check if executable is in any subdirectory
+                for child in children:
+                    if child.is_dir():
+                        candidate_path = child / expected_executable
+                        if candidate_path.exists():
+                            executable_found = True
+                            logger.debug(f"Verified executable at: {candidate_path}")
+                            break
+
+            if not executable_found:
+                raise UpdateExtractionError(
+                    f"Expected executable '{expected_executable}' not found at expected location after normalization"
+                )
 
     def _launch_update_script(self) -> None:
         """
         Launch the appropriate update script for the current platform.
         """
-        system = platform.system()
+        # Force elevation detection for Windows in protected directories
+        needs_elevation = False
+        if self._system == "Windows":
+            app_folder = AppInfo().application_folder
+            app_path_str = (
+                str(app_folder).replace("/", "\\").upper()
+            )  # Normalize slashes
+            protected_paths = [
+                r"C:\PROGRAM FILES",
+                r"C:\PROGRAM FILES (X86)",
+                r"C:\WINDOWS",
+            ]
+            for protected in protected_paths:
+                if protected in app_path_str:
+                    needs_elevation = True
+                    logger.debug(
+                        f"Elevation forced due to protected path match: {protected} in {app_path_str}"
+                    )
+                    break
+            else:
+                logger.debug(
+                    f"No protected path match for {app_path_str}; checking write access"
+                )
+                # Fallback write test only if not in protected path
+                try:
+                    test_file = app_folder / "test_write.tmp"
+                    test_file.write_text("test")
+                    test_file.unlink()
+                    logger.debug("Write test passed; no elevation needed")
+                except (OSError, IOError, PermissionError) as write_err:
+                    needs_elevation = True
+                    logger.debug(f"Write test failed ({write_err}); elevation needed")
+        else:
+            # For non-Windows, use the original check
+            needs_elevation = not os.access(AppInfo().application_folder, os.W_OK)
 
         # Stop watchdog before update
         logger.info("Stopping watchdog Observer thread before update...")
         self.main_content.stop_watchdog_signal.emit()
 
         try:
-            # Ensure updater logs are captured to a persistent location
-            log_dir = AppInfo().user_log_folder
-            log_dir.mkdir(parents=True, exist_ok=True)
-            log_path = log_dir / "updater.log"
+            log_path = self._prepare_update_log(self._system)
+            temp_dir = (
+                self.TEMP_DIR_DEFAULT
+                if self._system != "Darwin"
+                else self.TEMP_DIR_DARWIN
+            )
+            temp_path = Path(gettempdir()) / temp_dir
+            script_path, args_repr, start_new_session = self._get_script_info(
+                temp_path, log_path, needs_elevation
+            )
+            p = self._launch_script_process(
+                script_path,
+                args_repr,
+                start_new_session,
+                log_path,
+                needs_elevation,
+            )
 
-            # Small prologue in the updater log to aid debugging
-            try:
-                with open(log_path, "a", encoding="utf-8", errors="ignore") as lf:
-                    lf.write(
-                        f"\n===== RimSort updater launched: {datetime.now().isoformat()} ({system}) =====\n"
-                    )
-            except Exception:
-                # Non-fatal; continue without preface
-                pass
-
-            args_repr: str = ""
-            p: subprocess.Popen[bytes] | None = None
-            start_new_session = True  # Default for POSIX systems
-
-            if system == "Darwin":  # MacOS
-                current_dir = os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0])))
-                )
-                script_path = Path(current_dir) / "Contents" / "MacOS" / "update.sh"
-                start_new_session = False
-            elif system == "Windows":
-                script_path = AppInfo().application_folder / "update.bat"
-                # Redirect batch output into the updater log for diagnostics
-                # Using a single command string to support shell redirection
-                cmd_str = f'cmd /c ""{script_path}"" >> "{log_path}" 2>&1'
-                creationflags_value = (
-                    subprocess.CREATE_NEW_PROCESS_GROUP
-                    if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP")
-                    else 0
-                )
-                p = subprocess.Popen(
-                    cmd_str,
-                    creationflags=creationflags_value,
-                    shell=True,
-                    cwd=str(AppInfo().application_folder),
-                )
-                args_repr = cmd_str
-            else:  # Linux and other POSIX systems
-                script_path = AppInfo().application_folder / "update.sh"
-
-            if system != "Windows":
-                popen_args = ["/bin/bash", str(script_path)]
-                args_repr = " ".join(shlex.quote(a) for a in popen_args)
-                with open(log_path, "ab", buffering=0) as lf:
-                    p = subprocess.Popen(
-                        popen_args,
-                        start_new_session=start_new_session,
-                        stdout=lf,
-                        stderr=subprocess.STDOUT,
-                    )
-
-            assert p is not None
             logger.debug(f"External updater script launched with PID: {p.pid}")
             logger.debug(f"Arguments used: {args_repr}")
 
@@ -456,12 +894,144 @@ class UpdateManager(QObject):
             sys.exit(0)
 
         except Exception as e:
-            logger.error(f"Failed to launch update script: {e}")
-            dialogue.show_warning(
-                title=self.tr("Failed to launch update"),
-                text=self.tr("Could not start the update process."),
-                information=f"Error: {str(e)}",
-            )
+            raise UpdateScriptLaunchError(f"Failed to launch update script: {e}") from e
+
+    def _prepare_update_log(self, system: str) -> Path:
+        """
+        Prepare the update log file and write prologue.
+
+        Args:
+            system: The current platform system
+
+        Returns:
+            Path to the log file
+        """
+        log_dir = AppInfo().user_log_folder
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / self.UPDATER_LOG_FILENAME
+
+        # Small prologue in the updater log to aid debugging
+        try:
+            with open(log_path, "a", encoding="utf-8", errors="ignore") as lf:
+                lf.write(
+                    f"\n===== RimSort updater launched: {datetime.now().isoformat()} ({system}) =====\n"
+                )
+        except Exception:
+            # Non-fatal; continue without preface
+            pass
+
+        return log_path
+
+    def _get_script_info(
+        self, temp_path: Path, log_path: Path, needs_elevation: bool
+    ) -> tuple[Path, str, Optional[bool]]:
+        """
+        Get the script path, arguments representation, and session flag for the platform.
+
+        Args:
+            temp_path: Path to the temporary update directory
+            log_path: Path to the log file
+            needs_elevation: Whether to run with elevated privileges
+
+        Returns:
+            Tuple of (script_path, args_repr, start_new_session)
+        """
+        config = self._script_configs[self._system]
+        script_path = config.get_script_path()
+        args_repr = config.get_args(script_path, temp_path, log_path, needs_elevation)
+        start_new_session = config.start_new_session
+
+        return script_path, args_repr, start_new_session
+
+    def _launch_script_process(
+        self,
+        script_path: Path,
+        args_repr: str,
+        start_new_session: Optional[bool],
+        log_path: Path,
+        needs_elevation: bool,
+    ) -> subprocess.Popen[bytes]:
+        """
+        Launch the update script process.
+
+        Args:
+            script_path: Path to the script
+            args_repr: String representation of arguments
+            start_new_session: Whether to start in new session
+            log_path: Path to the log file
+            needs_elevation: Whether to run with elevated privileges
+
+        Returns:
+            The subprocess.Popen object
+        """
+        if needs_elevation:
+            if self._system == "Windows":
+                # For Windows, args_repr includes runas, no redirection to show prompts
+                p = subprocess.Popen(
+                    args_repr,
+                    shell=True,
+                    cwd=str(AppInfo().application_folder),
+                )
+            else:
+                # For POSIX, use sudo with list args, no redirection to show prompts
+                popen_args = ["sudo", "/bin/bash", str(script_path)]
+                p = subprocess.Popen(popen_args)
+        else:
+            if self._system == "Windows":
+                creationflags_value = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP
+                    if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP")
+                    else 0
+                )
+                p = subprocess.Popen(
+                    args_repr,
+                    creationflags=creationflags_value,
+                    shell=True,
+                    cwd=str(AppInfo().application_folder),
+                )
+            else:
+                popen_args = ["/bin/bash", str(script_path)]
+                effective_start_new_session = (
+                    start_new_session if start_new_session is not None else False
+                )
+                with open(log_path, "ab", buffering=0) as lf:
+                    p = subprocess.Popen(
+                        popen_args,
+                        start_new_session=effective_start_new_session,
+                        stdout=lf,
+                        stderr=subprocess.STDOUT,
+                    )
+
+        return p
+
+    def _create_backup(self) -> None:
+        """
+        Create a compressed backup of the current RimSort installation as a ZIP file.
+        """
+        app_folder = AppInfo().application_folder
+        backup_folder = AppInfo().backup_folder
+
+        # Generate backup ZIP filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"RimSort_Backup_{timestamp}.zip"
+        backup_path = backup_folder / backup_filename
+
+        logger.info(
+            f"Creating compressed backup of current installation to: {backup_path}"
+        )
+
+        try:
+            # Create ZIP backup of the application folder
+            with ZipFile(backup_path, "w", ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(app_folder):
+                    for file in files:
+                        file_path = Path(root) / file
+                        arcname = file_path.relative_to(app_folder)
+                        zipf.write(file_path, arcname)
+            logger.info("Compressed backup created successfully")
+        except Exception as e:
+            logger.warning(f"Failed to create backup: {e}")
+            # Continue with update even if backup fails
 
     def show_update_error(self) -> None:
         dialogue.show_warning(
