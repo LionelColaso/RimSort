@@ -179,7 +179,7 @@ class ScriptConfig:
             Arguments string or list for subprocess
         """
         base_args = [str(script_path), str(temp_path), str(log_path)]
-        if install_dir and self.platform == "Linux":
+        if install_dir:
             base_args.append(str(install_dir))
 
         return self._build_platform_args(base_args, script_path, needs_elevation)
@@ -1230,9 +1230,42 @@ class UpdateManager(QObject):
                 self._get_script_info(update_source_path, log_path, needs_elevation)
             )
 
+            # For Windows, copy the script to temp location to avoid deletion during folder replacement
+            if self._system == "Windows":
+                import tempfile
+
+                temp_script_path = (
+                    Path(tempfile.gettempdir()) / "RimSort_update_temp.bat"
+                )
+                try:
+                    shutil.copy2(str(script_path), str(temp_script_path))
+                    logger.debug(
+                        f"Copied update script to temp location: {temp_script_path}"
+                    )
+                    script_path = temp_script_path
+                    # Update args_repr to use the temp script path
+                    args_repr = [
+                        "cmd",
+                        "/k",
+                        str(script_path),
+                        str(update_source_path),
+                        str(log_path),
+                    ]
+                    if install_dir:
+                        args_repr.append(str(install_dir))
+                except (OSError, IOError) as e:
+                    logger.error(f"Failed to copy script to temp location: {e}")
+                    raise UpdateScriptLaunchError(
+                        f"Failed to copy update script to temp location: {e}"
+                    ) from e
+
             if self._system == "Windows":
                 p = self._launch_windows_update_script(
-                    script_path, args_repr, needs_elevation
+                    script_path,
+                    args_repr,
+                    needs_elevation,
+                    update_source_path,
+                    log_path,
                 )
             else:
                 p = self._launch_posix_update_script(
@@ -1258,6 +1291,8 @@ class UpdateManager(QObject):
         script_path: Path,
         args_repr: Union[str, List[str]],
         needs_elevation: bool,
+        update_source_path: Optional[Path] = None,
+        log_path: Optional[Path] = None,
     ) -> subprocess.Popen[Any]:
         """
         Launch the update script on Windows platform.
