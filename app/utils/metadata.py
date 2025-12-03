@@ -2199,6 +2199,17 @@ class ModParser(QRunnable):
                 self.data_source, self.mod_directory, self.metadata_manager, self.uuid
             )
             packageid = mod_metadata[self.uuid].get("packageid")
+            # Ensure packageid is hashable (convert dict to string representation if needed)
+            if isinstance(packageid, dict):
+                warning_msg = f"Mod {self.uuid} from {self.mod_directory} has malformed packageid (dict instead of string): {packageid}"
+                logger.warning(warning_msg)
+                self.metadata_manager.show_warning_signal.emit(
+                    "Malformed Mod Metadata",
+                    f"Mod UUID: {self.uuid}\n\nPath: {self.mod_directory}\n\nIssue: packageId is malformed (should be a string, not a nested object). This may cause sorting issues.",
+                    "warning",
+                    "Continue",
+                )
+                packageid = str(packageid)
             self.metadata_manager.internal_local_metadata.update(mod_metadata)
             # Track packageid -> uuid relationships for future uses
             self.metadata_manager.packageid_to_uuids.setdefault(packageid, set()).add(
@@ -2408,7 +2419,12 @@ def add_incompatibility_to_mod(
         # Create a new key with empty set as value by default
         mod_data.setdefault("incompatibilities", set())
 
-        all_package_ids = set(all_mods[uuid]["packageid"] for uuid in all_mods)
+        all_package_ids = set(
+            str(all_mods[uuid]["packageid"])
+            if isinstance(all_mods[uuid]["packageid"], dict)
+            else all_mods[uuid]["packageid"]
+            for uuid in all_mods
+        )
 
         # If the value is a single string...
         if isinstance(dependency_or_dependency_ids, str):
@@ -2524,7 +2540,11 @@ def get_mods_from_list(
     # Calculate duplicate mods (SCHEMA: {str packageid: list[str duplicate uuids]})
     for mod_uuid, mod_data in all_mods.items():
         # Using setdefault() to initialize the dictionary and then assigning the value
-        duplicate_mods.setdefault(mod_data["packageid"], []).append(mod_uuid)
+        packageid = mod_data["packageid"]
+        # Ensure packageid is hashable (convert dict to string representation if needed)
+        if isinstance(packageid, dict):
+            packageid = str(packageid)
+        duplicate_mods.setdefault(packageid, []).append(mod_uuid)
     # Filter out non-duplicate mods
     duplicate_mods = {k: v for k, v in duplicate_mods.items() if len(v) > 1}
     # Calculate mod lists
