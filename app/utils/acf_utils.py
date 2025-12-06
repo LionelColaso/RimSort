@@ -14,6 +14,7 @@ Key functions:
 - refresh_acf_metadata: Load ACF data into MetadataManager
 - load_and_merge_acf_data: Merge ACF data from multiple sources
 - steamcmd_purge_mods: Remove mods from SteamCMD ACF metadata
+- validate_acf_file_exists: Validate that appworkshop_294100.acf exists
 """
 
 from pathlib import Path
@@ -463,3 +464,36 @@ def steamcmd_purge_mods(
                 manifest_path.unlink()
             except Exception as e:
                 logger.error(f"Failed to remove manifest file {manifest_path}: {e}")
+
+
+def validate_acf_file_exists(steam_mods_location: str) -> bool:
+    """
+    Validate that the appworkshop_294100.acf file exists for the Steam Workshop location.
+
+    Checks if the Steam Workshop ACF metadata file exists at the expected location
+    relative to the provided steam mods folder path. This file is required for
+    Steam Workshop integration to function properly.
+
+    Args:
+        steam_mods_location: Path to the Steam Workshop mods folder (typically
+                           steamapps/workshop/content/294100). The ACF file is expected
+                           at parent.parent/appworkshop_294100.acf
+
+    Returns:
+        True if the ACF file exists, False otherwise.
+
+    Example:
+        >>> is_valid = validate_acf_file_exists("C:\\Steam\\steamapps\\workshop\\content\\294100")
+        >>> # Checks for C:\\Steam\\steamapps\\appworkshop_294100.acf
+    """
+    if not steam_mods_location or not steam_mods_location.strip():
+        logger.warning("Steam mods location is empty or None")
+        return False
+
+    acf_file_path = Path(steam_mods_location).parent.parent / "appworkshop_294100.acf"
+    if acf_file_path.exists():
+        logger.debug(f"ACF file validated at: {acf_file_path}")
+        return True
+
+    logger.warning(f"ACF file not found at expected location: {acf_file_path}")
+    return False

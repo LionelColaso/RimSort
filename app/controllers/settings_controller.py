@@ -13,6 +13,7 @@ from app.controllers.language_controller import LanguageController
 from app.controllers.metadata_db_controller import AuxMetadataController
 from app.controllers.theme_controller import ThemeController
 from app.models.settings import Instance, Settings
+from app.utils.acf_utils import validate_acf_file_exists
 from app.utils.constants import DEFAULT_INSTANCE_NAME, SortMethod
 from app.utils.event_bus import EventBus
 from app.utils.generic import (
@@ -1363,6 +1364,53 @@ class SettingsController(QObject):
             return False
         return True
 
+    def _validate_steam_integration(self) -> bool:
+        """
+        Validate that if Steam client integration or Steam mod location is enabled,
+        the appworkshop_294100.acf file exists.
+
+        :return: True if valid or not enabled, False otherwise.
+        """
+        steam_client_integration = (
+            self.settings_dialog.steam_client_integration_checkbox.isChecked()
+        )
+        steam_mods_location = (
+            self.settings_dialog.steam_mods_folder_location.text().strip()
+        )
+
+        if not steam_client_integration and not steam_mods_location:
+            return True
+
+        # If steam_client_integration is enabled but steam_mods_location is not set, disable it
+        if steam_client_integration and not steam_mods_location:
+            QMessageBox.warning(
+                self.settings_dialog,
+                self.tr("Steam Mods Location Required"),
+                self.tr(
+                    "Steam client integration requires a Steam mods location to be configured. "
+                    "Steam client integration will be disabled."
+                ),
+            )
+            self.settings_dialog.steam_client_integration_checkbox.setChecked(False)
+            return False
+
+        if steam_mods_location:
+            if not validate_acf_file_exists(steam_mods_location):
+                QMessageBox.warning(
+                    self.settings_dialog,
+                    self.tr("Steam Workshop File Not Found"),
+                    self.tr(
+                        "The Steam Workshop file 'appworkshop_294100.acf' was not found at the expected location. "
+                        "Steam client integration and Steam mod location will be disabled. "
+                        "Please ensure Steam is properly installed and has downloaded RimWorld Workshop data."
+                    ),
+                )
+                self.settings_dialog.steam_client_integration_checkbox.setChecked(False)
+                self.settings_dialog.steam_mods_folder_location.setText("")
+                return False
+
+        return True
+
     @Slot()
     def _on_global_ok_button_clicked(self) -> None:
         """
@@ -1378,6 +1426,10 @@ class SettingsController(QObject):
         if config_folder_text and not self._validate_config_folder_location(
             config_folder_text
         ):
+            return
+
+        # Validate Steam integration if enabled
+        if not self._validate_steam_integration():
             return
 
         self.settings_dialog.close()
