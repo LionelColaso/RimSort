@@ -66,6 +66,7 @@ from app.utils.steam.webapi.wrapper import (
     CollectionImport,
     ISteamRemoteStorage_GetPublishedFileDetails,
 )
+from app.utils.steam_utils import check_steam_available
 from app.utils.system_info import SystemInfo
 from app.utils.todds.wrapper import ToddsInterface
 from app.utils.update_utils import UpdateManager
@@ -2441,6 +2442,9 @@ class MainContent(QObject):
         logger.info(f"Received Steamworks API instruction: {instruction}")
         # use prebuilt libs path
         libs_path = str((AppInfo().application_folder / "libs"))
+        if not check_steam_available(_libs=libs_path):
+            logger.error("Steam is not available, skipping Steamworks API call")
+            return
         if not self.steamworks_in_use:
             subscription_actions = ["resubscribe", "subscribe", "unsubscribe"]
             supported_actions = ["launch_game_process"]
