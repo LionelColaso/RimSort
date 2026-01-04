@@ -1,3 +1,4 @@
+import os
 import sys
 from multiprocessing import Process
 from os import getcwd
@@ -38,6 +39,13 @@ class SteamworksInterface:
         _libs: str | None = None,
     ) -> None:
         logger.info("SteamworksInterface initializing...")
+        # Change to libs directory if provided (SteamworksPy looks in cwd for DLLs and steam_appid.txt)
+        original_cwd = None
+        if _libs and os.path.isdir(_libs):
+            original_cwd = os.getcwd()
+            os.chdir(_libs)
+            logger.debug(f"Changed working directory to: {_libs}")
+        
         self.callbacks = callbacks
         self.callbacks_count = 0
         self.callbacks_total = callbacks_total
@@ -54,7 +62,7 @@ class SteamworksInterface:
         # Used for GetAppDependencies data
         self.get_app_deps_query_result: dict[int, Any] = {}
         self.steam_not_running = False  # Skip action if True. Log occurrences.
-        self.steamworks = STEAMWORKS(_libs=_libs)
+        self.steamworks = STEAMWORKS()
         try:
             self.steamworks.initialize()  # Init the Steamworks API
         except Exception as e:
@@ -65,6 +73,11 @@ class SteamworksInterface:
                 "If you are a Steam user, please check that Steam running and that you are logged in..."
             )
             self.steam_not_running = True
+        finally:
+            # Restore original working directory if we changed it
+            if original_cwd:
+                os.chdir(original_cwd)
+                logger.debug(f"Restored working directory to: {original_cwd}")
         if not self.steam_not_running:  # Skip if True
             if self.callbacks:
                 # Start the thread
