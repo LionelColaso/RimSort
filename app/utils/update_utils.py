@@ -1033,22 +1033,6 @@ class UpdateManager(QObject):
                     "Extraction/preparation did not complete successfully"
                 )
 
-            # Confirm installation
-            answer = dialogue.show_dialogue_conditional(
-                title=self.tr("Update downloaded"),
-                text=self.tr("Do you want to proceed with the update?"),
-                information=self.tr(
-                    f"\nSuccessfully retrieved latest release.\nThe update will be installed from: {update_source_path}"
-                ),
-            )
-
-            if answer != QMessageBox.StandardButton.Yes:
-                logger.info("User declined update")
-                # Restore panel if it was hidden
-                if self.mod_info_panel:
-                    self.mod_info_panel.info_panel_frame.show()
-                return
-
             # Check if backup is enabled in settings
             if self.settings_controller.settings.enable_backup_before_update:
                 # Create backup of current installation with progress window
