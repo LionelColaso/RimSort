@@ -2307,238 +2307,498 @@ class ModListWidget(QListWidget):
         """Check if use_this_instead is applicable."""
         return bool(current_item_data["alternative"])
 
+    # ============================================================================
+    # ERROR/WARNING RECALCULATION WORKFLOW
+    # Main: recalculate_internal_errors_warnings() -> _initialize_error_tracking()
+    # Then per-mod: _update_save_comparison_indicators() -> _update_version_mismatch()
+    #           -> _sync_ignore_warnings_list() -> _check_mod_dependencies_and_conflicts()
+    #           -> _check_mod_load_order() -> _build_mod_tooltip_text()
+    # Finally: _update_summary_text()
+    # ============================================================================
+
+    def _update_save_comparison_indicators(
+        self,
+        current_item_data: dict[str, Any],
+        uuid: str,
+        latest_save_ids: set[str] | None,
+        save_compare_enabled: bool,
+    ) -> None:
+        """
+        Update 'is_new' and 'in_save' indicators based on save file presence.
+
+        For Active lists: marks mods not in the latest save as 'new'.
+        For Inactive lists: marks mods present in the latest save as 'in_save'.
+
+        Args:
+            current_item_data: The item's metadata dict to update
+            uuid: The mod's unique identifier
+            latest_save_ids: Set of package IDs from the latest save (or None if unavailable)
+            save_compare_enabled: Whether save comparison feature is enabled
+        """
+        if not save_compare_enabled:
+            current_item_data.__dict__["is_new"] = False
+            current_item_data.__dict__["in_save"] = False
+            return
+
+        try:
+            pkg_id = self.metadata_manager.internal_local_metadata[uuid]["packageid"]
+            is_in_save = (
+                pkg_id in latest_save_ids if latest_save_ids is not None else False
+            )
+
+            if self.list_type == "Active":
+                # Active list: 'new' if mod is NOT in save
+                current_item_data.__dict__["is_new"] = not is_in_save
+                current_item_data.__dict__["in_save"] = False
+            else:
+                # Inactive list: 'in_save' if mod IS in save
+                current_item_data.__dict__["is_new"] = False
+                current_item_data.__dict__["in_save"] = is_in_save
+        except Exception:
+            # If error occurs (e.g., mod data missing), default to not new/in_save
+            current_item_data.__dict__["is_new"] = False
+            current_item_data.__dict__["in_save"] = False
+
+    def _update_version_mismatch(
+        self,
+        mod_errors: dict[str, None | set[str] | bool],
+        current_item_data: dict[str, Any],
+        mod_packageid: str,
+        is_warned: bool,
+        uuid: str,
+    ) -> bool:
+        """
+        Check and update version mismatch status for a mod.
+
+        Args:
+            mod_errors: The mod's error tracking dictionary
+            current_item_data: The item's metadata dict
+            mod_packageid: The mod's package ID
+            is_warned: Whether the mod is in the ignore warnings list
+            uuid: The mod's unique identifier
+
+        Returns:
+            bool: True if the mod has a version mismatch that should be displayed
+        """
+        # Check mod supportedversions against currently loaded version of game
+        version_mismatch: bool = self._check_version_mismatch(uuid)
+        mod_errors["version_mismatch"] = version_mismatch
+
+        # Set mismatch visibility based on warning toggle status
+        warning_toggled = getattr(current_item_data, "warning_toggled", False)
+        if not is_warned and not warning_toggled:
+            return version_mismatch
+        return False
+
+    def _sync_ignore_warnings_list(
+        self, current_item_data: dict[str, Any], mod_packageid: str
+    ) -> None:
+        """
+        Synchronize the ignore warnings list when a mod is moved between lists.
+
+        If a mod is moved (e.g., inactive -> active), maintain its warning ignore status
+        in the new list. If the warning toggle is unchecked, remove the mod from the list.
+
+        Args:
+            current_item_data: The item's metadata dict
+            mod_packageid: The mod's package ID
+
+        Notes:
+            TODO: Consider consolidating the ignore list between Active and Inactive lists
+            to avoid duplicating warnings management logic.
+        """
+        warning_toggled = getattr(current_item_data, "warning_toggled", False)
+
+        if not warning_toggled:
+            # If warning is not toggled, remove from ignore list if present
+            if mod_packageid in self.ignore_warning_list:
+                self.ignore_warning_list.remove(mod_packageid)
+        else:
+            # If warning is toggled, add to ignore list if not present
+            if mod_packageid not in self.ignore_warning_list:
+                self.ignore_warning_list.append(mod_packageid)
+
+    def _check_mod_dependencies_and_conflicts(
+        self,
+        mod_errors: dict[str, None | set[str] | bool],
+        mod_data: dict[str, Any],
+        package_ids_set: set[str],
+    ) -> None:
+        """
+        Check for missing dependencies and conflicting incompatibilities.
+
+        Args:
+            mod_errors: The mod's error tracking dictionary to populate
+            mod_data: The mod's metadata
+            package_ids_set: Set of all package IDs in the current list
+        """
+        (
+            mod_errors["missing_dependencies"],
+            mod_errors["alternative_dependencies"],
+        ) = self._check_missing_dependencies(mod_data, package_ids_set)
+        mod_errors["conflicting_incompatibilities"] = self._check_incompatibilities(
+            mod_data, package_ids_set
+        )
+
+    def _check_mod_load_order(
+        self,
+        mod_errors: dict[str, None | set[str] | bool],
+        mod_data: dict[str, Any],
+        packageid_to_uuid: dict[str, str],
+        current_mod_index: int,
+    ) -> None:
+        """
+        Check for load order violations (loadBefore/loadAfter conflicts).
+
+        Args:
+            mod_errors: The mod's error tracking dictionary to populate
+            mod_data: The mod's metadata
+            packageid_to_uuid: Mapping of package IDs to UUIDs
+            current_mod_index: The mod's position in the current list
+        """
+        (
+            mod_errors["load_before_violations"],
+            mod_errors["load_after_violations"],
+        ) = self._check_load_order_violations(
+            mod_data, packageid_to_uuid, current_mod_index
+        )
+
+    def _build_mod_tooltip_text(
+        self,
+        mod_errors: dict[str, None | set[str] | bool],
+        mod_packageid: str,
+        packageid_to_uuid: dict[str, str],
+        internal_local_metadata: dict[str, dict[str, Any]],
+        is_warned: bool,
+        current_item_data: dict[str, Any],
+    ) -> tuple[str, str, str]:
+        """
+        Build tooltip text describing all errors and warnings for a mod.
+
+        Separates errors from warnings to support independent display.
+
+        Args:
+            mod_errors: The mod's error tracking dictionary
+            mod_packageid: The mod's package ID
+            packageid_to_uuid: Mapping of package IDs to UUIDs
+            internal_local_metadata: All mods' metadata
+            is_warned: Whether the mod is in the ignore warnings list
+            current_item_data: The item's metadata dict
+
+        Returns:
+            tuple: (error_text, warning_text, combined_tooltip_text)
+        """
+        error_text = ""
+        warning_text = ""
+
+        # Build error sections (missing dependencies, incompatibilities)
+        # Conditionally include alternative dependencies based on settings
+        error_sections = [
+            ("missing_dependencies", self.tr("\nMissing Dependencies:")),
+            ("conflicting_incompatibilities", self.tr("\nIncompatibilities:")),
+        ]
+        if self.metadata_manager.settings_controller.settings.use_alternative_package_ids_as_satisfying_dependencies:
+            error_sections.insert(
+                1,
+                ("alternative_dependencies", self.tr("\nAlternative Dependencies:")),
+            )
+
+        for error_type, tooltip_header in error_sections:
+            if mod_errors[error_type]:
+                error_text += tooltip_header
+                errors = mod_errors[error_type]
+                assert isinstance(errors, set)
+                for key in errors:
+                    # Look up mod name from packageid, fallback to SteamDB database
+                    name = internal_local_metadata.get(
+                        packageid_to_uuid.get(key, ""), {}
+                    ).get(
+                        "name",
+                        self.metadata_manager.steamdb_packageid_to_name.get(key, key),
+                    )
+                    error_text += f"\n  * {name}"
+
+        # Build warning sections (load order violations)
+        warning_sections = [
+            ("load_before_violations", self.tr("\nShould be Loaded After:")),
+            ("load_after_violations", self.tr("\nShould be Loaded Before:")),
+        ]
+        for error_type, tooltip_header in warning_sections:
+            if mod_errors[error_type]:
+                warning_text += tooltip_header
+                errors = mod_errors[error_type]
+                assert isinstance(errors, set)
+                for key in errors:
+                    # Look up mod name from packageid, fallback to SteamDB database
+                    name = internal_local_metadata.get(
+                        packageid_to_uuid.get(key, ""), {}
+                    ).get(
+                        "name",
+                        self.metadata_manager.steamdb_packageid_to_name.get(key, key),
+                    )
+                    warning_text += f"\n  * {name}"
+
+        # Add version mismatch warning if applicable
+        if mod_errors["version_mismatch"] and not is_warned:
+            warning_text += self.tr("\nMod and Game Version Mismatch")
+
+        # Add alternative mod recommendation if applicable and not warned
+        alternative = getattr(current_item_data, "alternative", None)
+        if (
+            not is_warned
+            and alternative
+            and self._check_use_this_instead(current_item_data)
+        ):
+            mod_errors["use_this_instead"] = True
+            warning_text += self.tr(
+                "\nAn alternative updated mod is recommended:\n{alternative}"
+            ).format(alternative=alternative)
+
+        # Combine errors and warnings for full tooltip
+        tool_tip_text = error_text + warning_text
+        return error_text, warning_text, tool_tip_text
+
+    def _update_summary_text(
+        self,
+        mod_errors: dict[str, None | set[str] | bool],
+        mod_data: dict[str, Any],
+        mod_packageid: str,
+        tool_tip_text: str,
+        is_warned: bool,
+        num_errors: int,
+        num_warnings: int,
+        total_error_text: str,
+        total_warning_text: str,
+    ) -> tuple[int, int, str, str]:
+        """
+        Update the summary error/warning text counters.
+
+        Increments counters and appends mod information when errors or warnings are found.
+
+        Args:
+            mod_errors: The mod's error tracking dictionary
+            mod_data: The mod's metadata
+            mod_packageid: The mod's package ID
+            tool_tip_text: The formatted tooltip text for this mod
+            is_warned: Whether the mod is in the ignore warnings list
+            num_errors: Current error counter
+            num_warnings: Current warning counter
+            total_error_text: Accumulated error text
+            total_warning_text: Accumulated warning text
+
+        Returns:
+            tuple: (updated_num_errors, updated_num_warnings, updated_total_error_text, updated_total_warning_text)
+        """
+        # Track errors: missing dependencies or incompatibilities
+        has_errors = any(
+            [
+                mod_errors[key]
+                for key in ["missing_dependencies", "conflicting_incompatibilities"]
+            ]
+        )
+        if has_errors:
+            num_errors += 1
+            error_summary = f"\n\n{mod_data['name']}"
+            error_summary += "\n" + "=" * len(mod_data["name"])
+            error_summary += tool_tip_text
+            total_error_text += error_summary
+
+        # Track warnings: load order violations, version mismatch, or alternatives
+        # Note: Don't count ignored warnings
+        if not is_warned:
+            has_warnings = any(
+                [
+                    mod_errors[key]
+                    for key in [
+                        "load_before_violations",
+                        "load_after_violations",
+                        "version_mismatch",
+                        "use_this_instead",
+                    ]
+                ]
+            )
+            if has_warnings:
+                num_warnings += 1
+                warning_summary = f"\n\n{mod_data['name']}"
+                warning_summary += "\n============================="
+                warning_summary += tool_tip_text
+                total_warning_text += warning_summary
+
+        return num_errors, num_warnings, total_error_text, total_warning_text
+
     def recalculate_internal_errors_warnings(self) -> tuple[str, str, int, int]:
         """
-        Whenever the respective mod list has items added to it, or has
-        items removed from it, or has items rearranged around within it,
-        calculate the internal list errors / warnings for the mod list
+        Recalculate errors and warnings for all mods in the current list.
+
+        This method is triggered whenever the mod list composition changes (items added, removed, or rearranged).
+        It performs a comprehensive analysis of each mod to identify and categorize potential issues:
+
+        **Dependency Analysis (Active list only):**
+        - Missing dependencies: Required mods not present in the list
+        - Conflicting incompatibilities: Mods marked as incompatible
+        - Alternative dependencies: Recommended alternatives available
+
+        **Load Order Analysis (Active list only):**
+        - LoadBefore violations: Mods that should load before others
+        - LoadAfter violations: Mods that should load after others
+
+        **Version & Status Analysis (All lists):**
+        - Version mismatches: Mod compatibility with current game version
+        - Alternative mods: Recommended replacement mods available
+        - Save file comparison: Indicator if mod is in/not in latest save
+
+        **Performance Notes:**
+        - Save file data is loaded once and cached for the entire run
+        - Dependency checks are skipped for ignored warnings (optimization)
+        - Active list processing is more intensive than Inactive list
+
+        Returns:
+            tuple: (total_error_text, total_warning_text, num_errors, num_warnings)
+                - total_error_text: Formatted summary of all errors (missing deps, incompatibilities)
+                - total_warning_text: Formatted summary of all warnings (load order, version issues)
+                - num_errors: Count of mods with errors
+                - num_warnings: Count of mods with warnings
         """
         logger.info(f"Recalculating {self.list_type} list errors / warnings")
 
         internal_local_metadata = self.metadata_manager.internal_local_metadata
+        is_active_list = self.list_type == "Active"
 
+        # Pre-compute lookup tables for efficient processing
         packageid_to_uuid = {
             internal_local_metadata[uuid]["packageid"]: uuid for uuid in self.uuids
         }
         package_ids_set = set(packageid_to_uuid.keys())
 
-        package_id_to_errors: dict[str, dict[str, None | set[str] | bool]] = {
-            uuid: {
-                "missing_dependencies": set() if self.list_type == "Active" else None,
-                "alternative_dependencies": set()
-                if self.list_type == "Active"
-                else None,
-                "conflicting_incompatibilities": (
-                    set() if self.list_type == "Active" else None
-                ),
-                "load_before_violations": set() if self.list_type == "Active" else None,
-                "load_after_violations": set() if self.list_type == "Active" else None,
-                "version_mismatch": True,
-                "use_this_instead": set()
-                if self.settings_controller.settings.external_use_this_instead_metadata_source
-                != "None"
-                else None,
-            }
-            for uuid in self.uuids
-        }
+        # Initialize error tracking structure for all mods
+        # Error keys are only populated for Active lists; Inactive lists remain None for efficiency
+        package_id_to_errors = self._initialize_error_tracking(is_active_list)
 
+        # Initialize summary accumulators
         num_warnings = 0
         total_warning_text = ""
         num_errors = 0
         total_error_text = ""
 
-        # Load latest save package ids once for this run, only if feature enabled
-        save_compare_enabled: bool = (
+        # Load save file data once (expensive operation, cached per run)
+        save_compare_enabled = (
             self.settings_controller.settings.show_save_comparison_indicators
         )
-        if save_compare_enabled:
-            latest_save_ids = self._get_latest_save_package_ids()
-        else:
-            latest_save_ids = None
+        latest_save_ids = (
+            self._get_latest_save_package_ids() if save_compare_enabled else None
+        )
 
+        # Process each mod: validate, check dependencies, build tooltips, update UI
         for uuid, mod_errors in package_id_to_errors.items():
             current_mod_index = self.uuids.index(uuid)
             current_item = self.item(current_mod_index)
             if current_item is None:
                 continue
+
+            # Extract mod metadata and item data
             current_item_data = current_item.data(Qt.ItemDataRole.UserRole)
+            mod_data = internal_local_metadata[uuid]
+            mod_packageid = mod_data["packageid"]
+            is_warned = mod_packageid in self.ignore_warning_list
+
+            # Reset all error/warning flags before recalculation
             current_item_data["mismatch"] = False
             current_item_data["errors"] = ""
             current_item_data["warnings"] = ""
-            # Mark active as new if not present in latest save; mark inactive as in_save if present in save
-            if save_compare_enabled:
-                try:
-                    pkg_id = internal_local_metadata[uuid]["packageid"]
-                    is_in_save = (
-                        pkg_id in latest_save_ids
-                        if latest_save_ids is not None
-                        else False
-                    )
-                    if self.list_type == "Active":
-                        current_item_data.__dict__["is_new"] = not is_in_save
-                        current_item_data.__dict__["in_save"] = False
-                    else:
-                        current_item_data.__dict__["is_new"] = False
-                        current_item_data.__dict__["in_save"] = is_in_save
-                except Exception:
-                    current_item_data.__dict__["is_new"] = False
-                    current_item_data.__dict__["in_save"] = False
-            else:
-                current_item_data.__dict__["is_new"] = False
-                current_item_data.__dict__["in_save"] = False
-            mod_data = internal_local_metadata[uuid]
-            # Check mod supportedversions against currently loaded version of game
-            mod_errors["version_mismatch"] = self._check_version_mismatch(uuid)
-            # Set an item's validity dynamically based on the version mismatch value
-            if (
-                mod_data["packageid"] not in self.ignore_warning_list
-                and not current_item_data["warning_toggled"]
-            ):
-                current_item_data["mismatch"] = mod_errors["version_mismatch"]
-            else:
-                # If a mod has been moved for eg. inactive -> active. We keep ignoring the warnings.
-                # This makes sure to add the mod to the ignore list of the new modlist.
-                # TODO: Check if toggle_warning method can add a mod to the ignore list
-                # of both ModListWidgets (Active and Inactive) at the same time. Then we can remove some of this confusing code...
-                if not current_item_data["warning_toggled"]:
-                    if mod_data["packageid"] in self.ignore_warning_list:
-                        self.ignore_warning_list.remove(mod_data["packageid"])
-                elif mod_data["packageid"] not in self.ignore_warning_list:
-                    self.ignore_warning_list.append(mod_data.get("packageid"))
-            # Check for "Active" mod list specific errors and warnings
-            if (
-                self.list_type == "Active"
-                and mod_data.get("packageid")
-                and mod_data["packageid"] not in self.ignore_warning_list
-            ):
-                # Use helper functions
-                (
-                    mod_errors["missing_dependencies"],
-                    mod_errors["alternative_dependencies"],
-                ) = self._check_missing_dependencies(mod_data, package_ids_set)
-                mod_errors["conflicting_incompatibilities"] = (
-                    self._check_incompatibilities(mod_data, package_ids_set)
+
+            # Update new/in_save indicators based on latest save file
+            self._update_save_comparison_indicators(
+                current_item_data, uuid, latest_save_ids, save_compare_enabled
+            )
+
+            # Check if mod has version mismatch with current game version
+            current_item_data["mismatch"] = self._update_version_mismatch(
+                mod_errors, current_item_data, mod_packageid, is_warned, uuid
+            )
+
+            # Maintain ignore warnings list consistency when mods move between lists
+            self._sync_ignore_warnings_list(current_item_data, mod_packageid)
+
+            # Perform detailed dependency and load order checks (Active list only, skip if warning ignored)
+            if is_active_list and mod_packageid and not is_warned:
+                self._check_mod_dependencies_and_conflicts(
+                    mod_errors, mod_data, package_ids_set
                 )
-                (
-                    mod_errors["load_before_violations"],
-                    mod_errors["load_after_violations"],
-                ) = self._check_load_order_violations(
-                    mod_data, packageid_to_uuid, current_mod_index
-                )
-            # Calculate any needed string for errors
-            tool_tip_text = ""
-            # Build tooltip sections, conditionally include alternatives
-            tooltip_sections = [
-                ("missing_dependencies", self.tr("\nMissing Dependencies:")),
-                ("conflicting_incompatibilities", self.tr("\nIncompatibilities:")),
-            ]
-            if self.metadata_manager.settings_controller.settings.use_alternative_package_ids_as_satisfying_dependencies:
-                tooltip_sections.insert(
-                    1,
-                    (
-                        "alternative_dependencies",
-                        self.tr("\nAlternative Dependencies:"),
-                    ),
+                self._check_mod_load_order(
+                    mod_errors, mod_data, packageid_to_uuid, current_mod_index
                 )
 
-            for error_type, tooltip_header in tooltip_sections:
-                if mod_errors[error_type]:
-                    tool_tip_text += tooltip_header
-                    errors = mod_errors[error_type]
-                    assert isinstance(errors, set)
-                    for key in errors:
-                        name = internal_local_metadata.get(
-                            packageid_to_uuid.get(key, ""), {}
-                        ).get(
-                            "name",
-                            self.metadata_manager.steamdb_packageid_to_name.get(
-                                key, key
-                            ),
-                        )
-                        tool_tip_text += f"\n  * {name}"
-            # If missing dependency and/or incompatibility, add tooltip to errors
-            current_item_data["errors"] = tool_tip_text
-            # Calculate any needed string for warnings
-            for error_type, tooltip_header in [
-                ("load_before_violations", self.tr("\nShould be Loaded After:")),
-                ("load_after_violations", self.tr("\nShould be Loaded Before:")),
-            ]:
-                if mod_errors[error_type]:
-                    tool_tip_text += tooltip_header
-                    errors = mod_errors[error_type]
-                    assert isinstance(errors, set)
-                    for key in errors:
-                        name = internal_local_metadata.get(
-                            packageid_to_uuid.get(key, ""), {}
-                        ).get(
-                            "name",
-                            self.metadata_manager.steamdb_packageid_to_name.get(
-                                key, key
-                            ),
-                        )
-                        tool_tip_text += f"\n  * {name}"
-            # Handle version mismatch behavior
-            if (
-                mod_errors["version_mismatch"]
-                and mod_data["packageid"] not in self.ignore_warning_list
-            ):
-                # Add tool tip to indicate mod and game version mismatch
-                tool_tip_text += self.tr("\nMod and Game Version Mismatch")
-            # Handle "use this instead" behavior
-            if (
-                self._check_use_this_instead(current_item_data)
-                and mod_data["packageid"] not in self.ignore_warning_list
-            ):
-                mod_errors["use_this_instead"] = True
-                tool_tip_text += self.tr(
-                    "\nAn alternative updated mod is recommended:\n{alternative}"
-                ).format(alternative=current_item_data["alternative"])
-            # Add to error summary if any missing dependencies or incompatibilities
-            if self.list_type == "Active" and any(
-                [
-                    mod_errors[key]
-                    for key in [
-                        "missing_dependencies",
-                        "conflicting_incompatibilities",
-                    ]
-                ]
-            ):
-                num_errors += 1
-                total_error_text += f"\n\n{mod_data['name']}"
-                total_error_text += "\n" + "=" * len(mod_data["name"])
-                total_error_text += tool_tip_text
+            # Generate formatted error/warning text for tooltip display
+            error_text, warning_text, tool_tip_text = self._build_mod_tooltip_text(
+                mod_errors,
+                mod_packageid,
+                packageid_to_uuid,
+                internal_local_metadata,
+                is_warned,
+                current_item_data,
+            )
 
-            # Add to warning summary if any loadBefore or loadAfter violations, or version mismatch
-            # Version mismatch is determined earlier without checking if the mod is in ignore_warning_list
-            # so we have to check it again here in order to not display a faulty, empty version warning
-            if (
-                self.list_type == "Active"
-                and mod_data["packageid"] not in self.ignore_warning_list
-                and any(
-                    [
-                        mod_errors[key]
-                        for key in [
-                            "load_before_violations",
-                            "load_after_violations",
-                            "version_mismatch",
-                            "use_this_instead",
-                        ]
-                    ]
-                )
-            ):
-                num_warnings += 1
-                total_warning_text += f"\n\n{mod_data['name']}"
-                total_warning_text += "\n============================="
-                total_warning_text += tool_tip_text
-            # Add tooltip to item data and set the data back to the item
+            # Store formatted text in item metadata for UI display
             current_item_data["errors_warnings"] = tool_tip_text.strip()
-            current_item_data["warnings"] = tool_tip_text[
-                len(current_item_data["errors"]) :
-            ].strip()
-            current_item_data["errors"] = current_item_data["errors"].strip()
+            current_item_data["warnings"] = warning_text.strip()
+            current_item_data["errors"] = error_text.strip()
             current_item.setData(Qt.ItemDataRole.UserRole, current_item_data)
+
+            # Accumulate error/warning summaries (Active list only)
+            if is_active_list:
+                num_errors, num_warnings, total_error_text, total_warning_text = (
+                    self._update_summary_text(
+                        mod_errors,
+                        mod_data,
+                        mod_packageid,
+                        tool_tip_text,
+                        is_warned,
+                        num_errors,
+                        num_warnings,
+                        total_error_text,
+                        total_warning_text,
+                    )
+                )
+
         logger.info(f"Finished recalculating {self.list_type} list errors and warnings")
         return total_error_text, total_warning_text, num_errors, num_warnings
+
+    def _initialize_error_tracking(
+        self, is_active_list: bool
+    ) -> dict[str, dict[str, None | set[str] | bool]]:
+        """
+        Initialize error tracking structure for all mods in the list.
+
+        Creates a dictionary to track various error types for each mod. Error types
+        are set to empty sets for Active lists (where checking is needed) and None
+        for Inactive lists (optimization to skip unnecessary checks).
+
+        Args:
+            is_active_list: Whether this is the Active (True) or Inactive (False) list
+
+        Returns:
+            dict: Mapping of uuid to error tracking dict with initialized error sets
+        """
+        has_alternative_mod_source = (
+            self.settings_controller.settings.external_use_this_instead_metadata_source
+            != "None"
+        )
+
+        return {
+            uuid: {
+                # Dependency-related errors (only track for Active list)
+                "missing_dependencies": set() if is_active_list else None,
+                "alternative_dependencies": set() if is_active_list else None,
+                "conflicting_incompatibilities": set() if is_active_list else None,
+                # Load order errors (only track for Active list)
+                "load_before_violations": set() if is_active_list else None,
+                "load_after_violations": set() if is_active_list else None,
+                # Version & alternative checks (track for all lists)
+                "version_mismatch": True,
+                "use_this_instead": set() if has_alternative_mod_source else None,
+            }
+            for uuid in self.uuids
+        }
 
     def _get_latest_save_package_ids(self) -> set[str] | None:
         """Attempt to find the latest RimWorld save file in the configured instance and extract modIds.
@@ -3781,7 +4041,7 @@ class ModsPanel(QWidget):
         if list_type == "Active":
             # Ensure all visible items have their widgets properly loaded
             self.active_mods_list.check_widgets_visible()
-            
+
             # Calculate internal errors and warnings for all mods in the list
             total_error_text, total_warning_text, num_errors, num_warnings = (
                 self.active_mods_list.recalculate_internal_errors_warnings()
