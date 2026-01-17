@@ -60,6 +60,10 @@ BACKUP_TIMEOUT_SECONDS = 600  # 10 minutes for backup
 EXTRACTION_THREAD_TIMEOUT_MS = 5000  # 5 seconds for thread cleanup
 THREAD_JOIN_TIMEOUT = 5  # 5 seconds for thread join
 
+# Subprocess timeouts for update scripts
+UPDATE_SCRIPT_TIMEOUT_SECONDS = 300  # 5 minutes max for update script execution
+MSI_INSTALL_TIMEOUT_SECONDS = 600  # 10 minutes max for MSI installer
+
 # Platform-specific constants
 # Note: TEMP_DIR_DARWIN and TEMP_DIR_DEFAULT are unused and can be removed
 
@@ -196,7 +200,13 @@ class ScriptConfig:
         Returns:
             Arguments string or list for subprocess
         """
+        # Build base arguments: script path, temp path, log path
         base_args = [str(script_path), str(temp_path), str(log_path)]
+
+        # Platform-specific argument appending:
+        # Windows: update.bat needs application folder for file operations
+        # Linux: Optional install directory provided by caller
+        # macOS: No additional args needed (uses default location)
         if self.platform == "Windows":
             base_args.append(str(AppInfo().application_folder))
         elif install_dir and self.platform == "Linux":
@@ -312,10 +322,11 @@ class ScriptConfig:
                 script_file = str(script_path)
                 temp_path = str(base_args[1])
                 log_path = str(base_args[2])
+                app_folder = str(base_args[3])  # Application folder path
 
                 # Build the cmd command with properly quoted arguments
                 # Using double quotes for cmd.exe path arguments
-                cmd_command = f'cd /d "{script_dir}" && "{script_file}" "{temp_path}" "{log_path}"'
+                cmd_command = f'cd /d "{script_dir}" && "{script_file}" "{temp_path}" "{log_path}" "{app_folder}"'
 
                 # Escape single quotes in cmd_command for PowerShell (double them)
                 cmd_command_escaped = cmd_command.replace("'", "''")
@@ -327,12 +338,14 @@ class ScriptConfig:
                 )
             else:
                 # Return as list - subprocess will handle proper quoting
+                # base_args: [script_path, temp_path, log_path, app_folder]
                 return [
                     "cmd",
                     "/k",
                     str(script_path),
-                    str(base_args[1]),
-                    str(base_args[2]),
+                    str(base_args[1]),  # temp_path
+                    str(base_args[2]),  # log_path
+                    str(base_args[3]),  # app_folder (for Windows batch script)
                 ]
         elif self.platform == "Linux":
             # Linux: Try direct bash execution first (primary method)
@@ -419,6 +432,63 @@ class UpdateManager(QObject):
         )
         # Progress window for update operations
         self._progress_widget: Optional[TaskProgressWindow] = None
+
+    def _show_progress_window(
+        self, title: str, initial_message: str = ""
+    ) -> tuple[QEventLoop, dict[str, Any]]:
+        """
+        Create and display a progress window for long-running operations.
+
+        Handles both embedded (in panel) and standalone display.
+
+        Args:
+            title: Window title
+            initial_message: Initial progress message
+
+        Returns:
+            Tuple of (QEventLoop, result_dict) for coordination
+        """
+        # Create progress window
+        self._progress_widget = TaskProgressWindow(
+            title=title,
+            show_message=True,
+            show_percent=True,
+        )
+        if initial_message:
+            self._progress_widget.update_progress(0, initial_message)
+
+        # Prepare result tracking
+        result = {"success": False, "error": "", "done": False}
+        loop = QEventLoop()
+
+        # Show in panel or standalone
+        if self.mod_info_panel:
+            self.mod_info_panel.info_panel_frame.hide()
+            if hasattr(self.main_content, "disable_enable_widgets_signal"):
+                self.main_content.disable_enable_widgets_signal.emit(False)
+            self.mod_info_panel.panel.addWidget(self._progress_widget)
+
+        self._progress_widget.show()
+        return loop, result
+
+    def _close_progress_window(self) -> None:
+        """
+        Close and clean up the progress window.
+
+        Safely removes from panel if present, restores UI state.
+        """
+        try:
+            if self._progress_widget:
+                self._progress_widget.close()
+                # Remove from panel if it was added there
+                if self.mod_info_panel:
+                    self.mod_info_panel.panel.removeWidget(self._progress_widget)
+                    # Restore panel visibility
+                    if hasattr(self.mod_info_panel, "info_panel_frame"):
+                        self.mod_info_panel.info_panel_frame.show()
+                self._progress_widget = None
+        except Exception as e:
+            logger.debug(f"Error closing progress widget: {e}")
 
     def _check_needs_elevation(self) -> bool:
         """
@@ -1516,7 +1586,15 @@ class UpdateManager(QObject):
 
     def _should_unwrap_directory(self, top_dir: Path) -> bool:
         """
-        Determine if a directory should be unwrapped based on platform-specific rules.
+        Determine if a directory should be unwrapped (its contents moved up).
+
+        Problem: Some ZIP distributions wrap the application in a container directory.
+        Solution: Detect and unwrap these wrappers to normalize the structure.
+
+        Examples that should unwrap:
+        - "Release-v1.0.0/" → unwrap
+        - "RimSort-app/" → unwrap
+        - But "RimSort.app/" on macOS → don't unwrap (it's the bundle)
 
         Args:
             top_dir: The directory to check
@@ -1526,27 +1604,54 @@ class UpdateManager(QObject):
         """
         top_dir_name = top_dir.name.lower()
 
-        # Common wrapper patterns
+        # Pattern 1: Common wrapper keywords (app, application, release folders)
         if any(
             keyword in top_dir_name for keyword in ["app", "application", "release"]
         ):
             return True
 
-        # Version-like directory names
+        # Pattern 2: Version-like directory names (e.g., "v1.0.0", "1.0.0-beta")
         if VERSION_PATTERN.match(top_dir_name):
             return True
 
-        # Platform-specific rules
+        # Pattern 3: Platform-specific rules
         if self._system == "Darwin":
+            # On macOS, only keep RimSort.app itself (it's the actual application bundle)
             return top_dir_name != "rimsort.app"
         elif self._system == "Windows":
+            # On Windows, any single directory is likely a wrapper
             return True
         elif self._system == "Linux":
+            # On Linux, only keep rimsort or rimsort.app directories
             return top_dir_name.lower() not in ["rimsort", "rimsort.app"]
 
         return False
 
-    def _move_directory_contents(self, source_dir: Path, dest_dir: Path) -> int:
+    def _find_executable(self, search_path: Path, name: str) -> Optional[Path]:
+        """
+        Find an executable in a directory tree using rglob for instant lookup.
+
+        More efficient than manual iteration, handles any nesting depth.
+
+        Args:
+            search_path: Root directory to search
+            name: Executable name (e.g., "RimSort" or "RimSort.exe")
+
+        Returns:
+            Path to executable if found, None otherwise
+        """
+        try:
+            # rglob searches all levels instantly
+            for exec_path in search_path.rglob(name):
+                if exec_path.is_file():
+                    return exec_path
+        except (OSError, PermissionError):
+            pass
+        return None
+
+    def _move_directory_contents(
+        self, source_dir: Path, dest_dir: Path
+    ) -> tuple[int, list[str]]:
         """
         Move all contents from source directory to destination directory safely.
 
@@ -1555,12 +1660,16 @@ class UpdateManager(QObject):
             dest_dir: Destination directory to move contents to
 
         Returns:
-            Number of items successfully moved
+            Tuple of (items_moved, failed_items list)
+            Tracks which items failed to move for validation later
         """
         moved_items = 0
+        failed_items = []
+
         for item in source_dir.iterdir():
             if not item.exists():
                 logger.warning(f"Item {item} does not exist, skipping")
+                failed_items.append(str(item))
                 continue
             dest = dest_dir / item.name
             try:
@@ -1573,15 +1682,29 @@ class UpdateManager(QObject):
                 shutil.move(str(item), str(dest))
                 moved_items += 1
             except (OSError, IOError, FileNotFoundError) as e:
-                logger.warning(f"Failed to move {item} to {dest}: {e}. Skipping item.")
+                logger.warning(
+                    f"Failed to move {item} to {dest}: {e}. Tracking for validation."
+                )
+                failed_items.append(str(item.name))
                 continue
-        return moved_items
+
+        if failed_items:
+            logger.warning(
+                f"Failed to move {len(failed_items)} item(s): {failed_items}"
+            )
+
+        return moved_items, failed_items
 
     def _validate_executable_presence(
         self, extract_path: Path, children: List[Path]
     ) -> None:
         """
         Validate that the expected executable is present in the extracted structure.
+
+        Handles platform-specific locations:
+        - Windows: RimSort.exe at root or in subdirectories
+        - macOS: RimSort in Contents/MacOS/ within .app bundle
+        - Linux: RimSort at root or in subdirectories
 
         Args:
             extract_path: Path to the extracted contents
@@ -1592,18 +1715,17 @@ class UpdateManager(QObject):
         """
         expected_executable = "RimSort.exe" if self._system == "Windows" else "RimSort"
         executable_found = False
+        executable_path: Optional[Path] = None
 
         if self._system == "Darwin":
-            # Look for .app bundle
+            # macOS: Look for RimSort.app bundle structure
+            # Expected: RimSort.app/Contents/MacOS/RimSort
             for child in children:
                 if child.is_dir() and child.name.endswith(".app"):
-                    app_bundle = child
-                    executable_path = (
-                        app_bundle / "Contents" / "MacOS" / expected_executable
-                    )
+                    executable_path = child / "Contents" / "MacOS" / expected_executable
                     if executable_path.exists():
                         executable_found = True
-                        logger.info("Found macOS executable")
+                        logger.info("Found macOS executable in .app bundle")
                         break
             if not executable_found:
                 logger.error("RimSort.app bundle not found")
@@ -1611,20 +1733,11 @@ class UpdateManager(QObject):
                     "Expected RimSort.app bundle with executable not found after normalization"
                 )
         else:
-            # Look for executable directly
-            executable_path = extract_path / expected_executable
-            if executable_path.exists():
+            # Windows/Linux: Use efficient rglob search for instant lookup
+            executable_path = self._find_executable(extract_path, expected_executable)
+            if executable_path:
                 executable_found = True
-                logger.info(f"Found executable: {expected_executable}")
-            else:
-                # Fallback: check if executable is in any subdirectory
-                for child in children:
-                    if child.is_dir():
-                        candidate_path = child / expected_executable
-                        if candidate_path.exists():
-                            executable_found = True
-                            logger.info("Found executable in subdirectory")
-                            break
+                logger.info(f"Found executable: {executable_path}")
 
             if not executable_found:
                 logger.error(
@@ -1687,13 +1800,20 @@ class UpdateManager(QObject):
                 )
 
                 # Move all contents from top_dir to extract_path
-                moved_items = self._move_directory_contents(top_dir, extract_path)
+                moved_items, failed_items = self._move_directory_contents(
+                    top_dir, extract_path
+                )
 
                 if moved_items == 0:
                     logger.warning(
                         "No items were successfully moved during normalization"
                     )
                     break
+
+                if failed_items:
+                    logger.warning(
+                        f"Some items failed to move during normalization: {failed_items}"
+                    )
 
                 # Remove empty top_dir if possible
                 try:
@@ -1759,6 +1879,14 @@ class UpdateManager(QObject):
             if not script_path.exists():
                 raise UpdateScriptLaunchError(f"Update script not found: {script_path}")
 
+            # Clean up old log file to avoid encoding issues
+            try:
+                if Path(log_path).exists():
+                    Path(log_path).unlink()
+                    logger.debug(f"Cleaned up old log file: {log_path}")
+            except Exception as e:
+                logger.warning(f"Could not clean old log file: {e}")
+
             # For Windows, copy update.bat to app_storage_folder to avoid conflicts during update
             if self._system == "Windows":
                 app_storage_folder = AppInfo().app_storage_folder
@@ -1805,10 +1933,10 @@ class UpdateManager(QObject):
             logger.debug(f"External updater script launched with PID: {p.pid}")
             logger.debug(f"Arguments used: {args_repr}")
 
-            # Give subprocess time to initialize before exit
-            time.sleep(1)
-
-            # Exit the application to allow update
+            # Exit immediately to release RimSort.exe file lock
+            # The batch script needs the executable to be unlocked to replace it
+            # The batch will handle restarting the updated RimSort
+            # Don't wait for the process - just exit NOW
             sys.exit(0)
 
         except Exception as e:
@@ -1832,46 +1960,28 @@ class UpdateManager(QObject):
             The subprocess.Popen object for the launched script
         """
         cwd = str(AppInfo().application_folder)
-        if needs_elevation:
-            # Use PowerShell to run as administrator
-            p = subprocess.Popen(
-                args_repr,
-                shell=True,
-                cwd=cwd,
-            )
-        else:
-            # Convert list args to string command for proper window display and argument passing
-            if isinstance(args_repr, list):
-                # Build command string with proper quoting for Windows batch execution
-                # Always quote path arguments to handle spaces and special characters
-                cmd_parts = []
-                for i, arg in enumerate(args_repr):
-                    arg_str = str(arg)
-
-                    # First two items are 'cmd' and '/k' flags, don't quote them
-                    if i < 2:
-                        cmd_parts.append(arg_str)
-                    else:
-                        # Quote all remaining arguments (paths) to ensure proper handling
-                        # of spaces and special characters in usernames/paths
-                        cmd_parts.append(f'"{arg_str}"')
-                cmd_str = " ".join(cmd_parts)
+        try:
+            if needs_elevation:
+                # Use PowerShell to run as administrator
+                p = subprocess.Popen(
+                    args_repr,
+                    shell=True,
+                    cwd=cwd,
+                )
             else:
-                cmd_str = args_repr
+                # For Windows non-elevation: args_repr is a list like ["cmd", "/k", script, arg1, arg2, ...]
+                # Pass list directly to Popen - Windows will handle quoting
+                logger.debug(f"Launching update script with args: {args_repr}")
+                # Use Popen with list directly (no shell=True) - much more reliable
+                # Don't redirect stdin/stdout/stderr to avoid handle issues
+                p = subprocess.Popen(args_repr)
 
-            logger.debug(f"Launching update script with command: {cmd_str}")
-
-            # Use 'start' command to ensure visible console window
-            # Quote the working directory for paths with spaces
-            start_cmd = f'start "RimSort Update" /D "{cwd}" {cmd_str}'
-            logger.debug(f"Using start command: {start_cmd}")
-
-            p = subprocess.Popen(
-                start_cmd,
-                shell=True,
-                cwd=cwd,
-            )
-        return p
+            return p
+        except subprocess.TimeoutExpired:
+            raise
+        except OSError as e:
+            logger.error(f"OS error launching Windows update script: {e}")
+            raise UpdateScriptLaunchError(f"OS error during script launch: {e}") from e
 
     def _launch_posix_update_script(
         self,
@@ -1939,7 +2049,33 @@ class UpdateManager(QObject):
             logger.info(
                 f"Successfully launched update script with primary method (PID: {p.pid})"
             )
+
+            # Wait for process with timeout to prevent hung updates
+            try:
+                p.wait(timeout=UPDATE_SCRIPT_TIMEOUT_SECONDS)
+                logger.debug(
+                    f"Update script completed with return code: {p.returncode}"
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    f"Update script did not complete within {UPDATE_SCRIPT_TIMEOUT_SECONDS} seconds, "
+                    f"terminating process (PID: {p.pid})"
+                )
+                p.kill()
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.error(f"Failed to terminate update script process {p.pid}")
+                raise UpdateScriptLaunchError(
+                    f"Update script execution timeout after {UPDATE_SCRIPT_TIMEOUT_SECONDS} seconds"
+                )
+
             return p
+        except subprocess.TimeoutExpired:
+            raise
+        except OSError as e:
+            logger.error(f"OS error launching update script: {e}")
+            raise UpdateScriptLaunchError(f"OS error during script launch: {e}") from e
         except Exception as e:
             # Fallback for Linux only - try terminal emulator if direct bash fails
             if self._system == "Linux":
@@ -1970,7 +2106,34 @@ class UpdateManager(QObject):
                     logger.info(
                         f"Successfully launched update script with terminal fallback (PID: {p.pid})"
                     )
+
+                    # Wait for process with timeout
+                    try:
+                        p.wait(timeout=UPDATE_SCRIPT_TIMEOUT_SECONDS)
+                        logger.debug(
+                            f"Fallback script completed with return code: {p.returncode}"
+                        )
+                    except subprocess.TimeoutExpired:
+                        logger.warning(
+                            f"Fallback script timeout after {UPDATE_SCRIPT_TIMEOUT_SECONDS} seconds"
+                        )
+                        p.kill()
+                        try:
+                            p.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            logger.error(f"Failed to terminate fallback script {p.pid}")
+                        raise UpdateScriptLaunchError(
+                            f"Update script timeout after {UPDATE_SCRIPT_TIMEOUT_SECONDS} seconds"
+                        )
+
                     return p
+                except subprocess.TimeoutExpired:
+                    raise
+                except OSError as fallback_err:
+                    logger.error(f"OS error in fallback launch: {fallback_err}")
+                    raise UpdateScriptLaunchError(
+                        f"OS error: {fallback_err}"
+                    ) from fallback_err
                 except Exception as fallback_err:
                     logger.error(
                         f"Both primary and fallback methods failed: {e} -> {fallback_err}"
@@ -2020,15 +2183,41 @@ class UpdateManager(QObject):
 
         try:
             logger.info(f"Launching MSI installer: {msi_path}")
-            subprocess.Popen(cmd, shell=True)
+            p = subprocess.Popen(cmd, shell=True)
+            logger.debug(f"MSI process started with PID: {p.pid}")
+
+            # Wait for MSI installation with timeout
+            try:
+                p.wait(timeout=MSI_INSTALL_TIMEOUT_SECONDS)
+                logger.debug(
+                    f"MSI installation completed with return code: {p.returncode}"
+                )
+            except subprocess.TimeoutExpired:
+                logger.error(
+                    f"MSI installation timeout after {MSI_INSTALL_TIMEOUT_SECONDS} seconds"
+                )
+                p.kill()
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.error(f"Failed to terminate MSI process {p.pid}")
+                raise UpdateScriptLaunchError(
+                    f"MSI installation timeout after {MSI_INSTALL_TIMEOUT_SECONDS} seconds"
+                )
+
             self.update_progress.emit(100, "Update launched!")
             logger.info("MSI launched, exiting RimSort to allow file replacement")
 
             # Give subprocess time to initialize before exit
             time.sleep(1)
 
+        except subprocess.TimeoutExpired:
+            raise
         except FileNotFoundError as e:
             raise UpdateScriptLaunchError(f"msiexec executable not found: {e}") from e
+        except OSError as e:
+            logger.error(f"OS error launching MSI: {e}")
+            raise UpdateScriptLaunchError(f"OS error during MSI launch: {e}") from e
         except Exception as e:
             raise UpdateScriptLaunchError(f"Failed to launch MSI: {e}") from e
 
