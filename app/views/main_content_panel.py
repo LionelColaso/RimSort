@@ -2176,7 +2176,8 @@ class MainContent(QObject):
                         pfid_or_pfids=instruction[1],
                         _libs=libs_path,
                     )
-                    handler.run()
+                    handler.start()
+                    handler.join()
                     # Clean up after processing
                     self.steamworks_in_use = False
                 else:
