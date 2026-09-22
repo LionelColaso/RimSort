@@ -9,6 +9,9 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 ruff_config := "--config pyproject.toml"
 pytest_opts := "--doctest-modules --no-qt-log"
 cov_opts := "--junitxml=junit/test-results.xml --cov=app --cov-report=xml --cov-report=html --cov-report=term-missing"
+# Artifacts a `clean` removes (names and globs); shared so the Unix and
+# Windows recipes can't drift apart. Excludes user data (dev/, .venv/).
+clean_targets := "build dist htmlcov junit .pytest_cache .mypy_cache .ruff_cache .coverage .coverage.* coverage.xml nuitka-crash-report.xml version.xml .dmypy.json dmypy.json MANIFEST *.egg-info *.py[cod] .translation_cache.json"
 
 # ─── Default Target (lists all available recipes) ────────────────────────
 @default:
@@ -208,15 +211,12 @@ update:
 clean:
     #!/usr/bin/env bash
     set -euo pipefail
-    rm -rf build/ dist/ *.egg-info
-    rm -rf .pytest_cache .mypy_cache .ruff_cache
-    rm -rf htmlcov .coverage coverage.xml
-    rm -rf junit/
+    rm -rf {{clean_targets}}
     find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 [windows]
 clean:
-    Get-ChildItem -Force | Where-Object { $_.Name -in @("build", "dist", ".pytest_cache", ".mypy_cache", ".ruff_cache", "htmlcov", ".coverage", "coverage.xml", "junit") -or $_.Name -like "*.egg-info" } | Remove-Item -Recurse -Force
+    $patterns = "{{clean_targets}}".Split(" "); Get-ChildItem -Force | Where-Object { $n = $_.Name; $patterns | Where-Object { $n -like $_ } } | Remove-Item -Recurse -Force
     Get-ChildItem -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
 
 # ═══════════════════════════════════════════════════════════════════════════
