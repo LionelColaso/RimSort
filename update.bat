@@ -89,6 +89,25 @@ if not exist "%update_source_folder%" (
     exit /b 1
 )
 
+REM Adjust source folder if RimSort.exe lives inside a wrapper directory
+REM (mirrors update.sh so zip/manual updates with a top-level folder work too)
+if not exist "%update_source_folder%\RimSort.exe" (
+    for /d %%d in ("%update_source_folder%\*") do (
+        if exist "%%d\RimSort.exe" (
+            set "update_source_folder=%%d"
+            goto :source_adjusted
+        )
+    )
+)
+:source_adjusted
+if not "%update_source_folder%"=="%TEMP_UPDATE_PATH%" (
+    if defined LOG_PATH (
+        echo [%date% %time%] INFO: Adjusted update source to wrapper directory: %update_source_folder% >> "%LOG_PATH%"
+    ) else (
+        echo [%date% %time%] INFO: Adjusted update source to wrapper directory: %update_source_folder%
+    )
+)
+
 REM Check if RimSort.exe exists in the update folder
 if not exist "%update_source_folder%\RimSort.exe" (
     if defined LOG_PATH (
